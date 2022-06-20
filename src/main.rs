@@ -852,12 +852,20 @@ fn encode_branch_instruction(
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
     current_address: u32,
+    warnings: &mut Vec<Message>,
 ) -> Result<u32, Message> {
     let kind_bin = (kind as u8) as u32;
     let d_bin = evaluate_folded(d, scope, constant_map, label_map)?;
 
     if (d_bin & 0x3) != 0 {
-        // TODO: warn unaligned branch
+        let msg = Message {
+            kind: MessageKind::Error,
+            token_span: d.span().unwrap().clone(),
+            span: d.span().unwrap().clone(),
+            text: "branch is not aligned, actual target address will be truncated".into(),
+        };
+
+        warnings.push(msg);
     }
 
     let rel = d_bin - (current_address as i64);
@@ -911,13 +919,22 @@ fn encode_upper_immediate_instruction(
 
 fn encode_instruction(
     inst: &Instruction,
+    line_span: &TextSpan,
     scope: &[&str],
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
     current_address: u32,
+    warnings: &mut Vec<Message>,
 ) -> Result<u32, Message> {
     if (current_address & 0x3) != 0 {
-        // TODO: warn unaligned instruction
+        let msg = Message {
+            kind: MessageKind::Error,
+            token_span: line_span.clone(),
+            span: line_span.clone(),
+            text: "instruction is not 4-byte aligned, behaviour at execution is undefined".into(),
+        };
+
+        warnings.push(msg);
     }
 
     macro_rules! alu {
@@ -947,6 +964,7 @@ fn encode_instruction(
                 constant_map,
                 label_map,
                 current_address,
+                warnings,
             )
         };
     }
@@ -1073,6 +1091,7 @@ fn main() -> std::io::Result<()> {
                     let output: &mut dyn Output = &mut output;
 
                     let mut scope_stack = Vec::new();
+                    let mut warnings = Vec::new();
 
                     for line in lines.iter() {
                         macro_rules! int {
@@ -1145,10 +1164,12 @@ fn main() -> std::io::Result<()> {
                             LineKind::Instruction(inst) => {
                                 match encode_instruction(
                                     inst,
+                                    line.span(),
                                     &scope_stack,
                                     &constant_map,
                                     &label_map,
                                     output.current_address(),
+                                    &mut warnings,
                                 ) {
                                     Ok(word) => {
                                         output.write_instruction(
@@ -1172,6 +1193,10 @@ fn main() -> std::io::Result<()> {
                             }
                             _ => {}
                         }
+                    }
+
+                    for msg in warnings.into_iter() {
+                        msg.pretty_print(&mut stdout)?;
                     }
                 }
                 Err(msg) => msg.pretty_print(&mut stdout)?,
