@@ -37,8 +37,6 @@ impl<'a> TokenInput<'a> {
     }
 
     fn error_span(&self, all: bool) -> TextSpan {
-        // TODO: skip whitespace
-
         if let Some(next) = self.peek() {
             if all {
                 let last = self.tokens.last().unwrap();
@@ -53,8 +51,6 @@ impl<'a> TokenInput<'a> {
     }
 
     fn hint_span(&self, all: bool) -> TextSpan {
-        // TODO: skip whitespace
-
         if let Some(prev) = self.tokens.get(self.position.saturating_sub(1)) {
             if all {
                 let first = self.tokens.first().unwrap();

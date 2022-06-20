@@ -145,6 +145,7 @@ impl<T, E> FromResidual for OptionalResult<T, E> {
 pub enum MessageKind {
     Error,
     Hint,
+    Warning,
 }
 
 #[derive(Debug)]
@@ -171,6 +172,7 @@ impl Message {
         let kind_color = match self.kind {
             MessageKind::Error => Color::Red,
             MessageKind::Hint => Color::Blue,
+            MessageKind::Warning => Color::Yellow,
         };
 
         writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(kind_color)))?;
@@ -313,22 +315,6 @@ impl std::fmt::Display for Register {
     }
 }
 
-const TEST_FILE: &str = "
-$UART_DATA_IN      = 0x004 // read-only
-$UART_DATA_OUT     = 0x005 // write-only
-$UART_INPUT_COUNT  = 0x006 // read-only
-$UART_OUTPUT_COUNT = 0x007 // read-only
-
-serial_read_byte:
-    .wait:
-        in t0, [$UART_INPUT_COUNT]
-        test t0
-        br.z .wait
-
-    in a0, [$UART_DATA_IN]
-    jmp ra
-";
-
 fn align_up(address: u32, align: u32) -> u32 {
     address.div_ceil(align) * align
 }
@@ -346,7 +332,7 @@ fn count_leading_dots(s: &str) -> (usize, &str) {
     (count, "")
 }
 
-fn associate_label_addresses(lines: &[Line]) -> AHashMap<String, u32> {
+fn associate_label_addresses(lines: &[Line]) -> Option<AHashMap<String, u32>> {
     use std::mem::size_of;
 
     let mut map = AHashMap::new();
@@ -370,6 +356,7 @@ fn associate_label_addresses(lines: &[Line]) -> AHashMap<String, u32> {
 
                 if map.insert(full_name, address).is_some() {
                     // TODO: duplicate label error
+                    return None;
                 }
             }
             LineKind::Directive(dir) => match dir {
@@ -406,34 +393,22 @@ fn associate_label_addresses(lines: &[Line]) -> AHashMap<String, u32> {
         }
     }
 
-    map
+    Some(map)
 }
 
-fn find_constants<'a>(lines: &'a [Line]) -> AHashMap<String, &'a Expression<'a>> {
+fn find_constants<'a>(lines: &'a [Line]) -> Option<AHashMap<String, &'a Expression<'a>>> {
     let mut map = AHashMap::new();
-    let mut scope_stack = Vec::new();
 
     for line in lines.iter() {
         if let LineKind::Define(name, expr) = line.kind() {
-            let (level, name) = count_leading_dots(name);
-
-            scope_stack.resize(level, "");
-            scope_stack.push(name);
-
-            let mut full_name = String::new();
-            for scope in scope_stack[..level].iter() {
-                full_name.push_str(scope);
-                full_name.push_str("::");
-            }
-            full_name.push_str(name);
-
-            if map.insert(full_name, expr).is_some() {
+            if map.insert(name.to_string(), expr).is_some() {
                 // TODO: duplicate constant error
+                return None;
             }
         }
     }
 
-    map
+    Some(map)
 }
 
 macro_rules! bool_as_int {
@@ -476,65 +451,118 @@ fn evaluate_binary_op(op: &BinaryOperator, lhs_val: i64, rhs_val: i64) -> i64 {
     }
 }
 
-fn evaluate<'a>(
+fn evaluate<'a, W: WriteColor + Write>(
+    writer: &mut W,
     expr: &'a Expression<'a>,
+    scope: &[&'a str],
     constant_map: &AHashMap<String, &'a Expression<'a>>,
     label_map: &AHashMap<String, u32>,
-) -> i64 {
-    match expr {
+) -> Option<i64> {
+    Some(match expr {
         Expression::IntegerConstant(val) => *val,
         Expression::CharConstant(c) => (*c as u32) as i64,
-        Expression::Label(name) => todo!(),
-        Expression::Define(name) => todo!(),
+        Expression::Label(name) => {
+            let (level, name) = count_leading_dots(name);
+
+            let mut full_name = String::new();
+            for scope in scope[..level].iter() {
+                full_name.push_str(scope);
+                full_name.push_str("::");
+            }
+            full_name.push_str(name);
+
+            if let Some(addr) = label_map.get(&full_name) {
+                *addr as i64
+            } else {
+                // TODO: label not found error
+                return None;
+            }
+        }
+        Expression::Define(name) => {
+            if let Some(sub_expr) = constant_map.get(*name) {
+                evaluate(writer, sub_expr, scope, constant_map, label_map)?
+            } else {
+                // TODO: constant not found error
+                return None;
+            }
+        }
         Expression::UnaryOperator(op, sub_expr) => {
-            let sub_val = evaluate(sub_expr, constant_map, label_map);
+            let sub_val = evaluate(writer, sub_expr, scope, constant_map, label_map)?;
             evaluate_unary_op(op, sub_val)
         }
         Expression::BinaryOperator(op, lhs_expr, rhs_expr) => {
-            let lhs_val = evaluate(lhs_expr, constant_map, label_map);
-            let rhs_val = evaluate(rhs_expr, constant_map, label_map);
+            let lhs_val = evaluate(writer, lhs_expr, scope, constant_map, label_map)?;
+            let rhs_val = evaluate(writer, rhs_expr, scope, constant_map, label_map)?;
             evaluate_binary_op(op, lhs_val, rhs_val)
         }
-        Expression::Parenthesized(expr) => evaluate(expr, constant_map, label_map),
-    }
+        Expression::Parenthesized(expr) => evaluate(writer, expr, scope, constant_map, label_map)?,
+    })
 }
 
-fn evaluate_folded<'a>(
+fn evaluate_folded<'a, W: WriteColor + Write>(
+    writer: &mut W,
     expr: &'a Expression<'a>,
+    scope: &[&'a str],
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
-) -> i64 {
-    match expr {
+) -> Option<i64> {
+    Some(match expr {
         Expression::IntegerConstant(val) => *val,
         Expression::CharConstant(c) => (*c as u32) as i64,
-        Expression::Label(name) => todo!(),
-        Expression::Define(name) => todo!(),
+        Expression::Label(name) => {
+            let (level, name) = count_leading_dots(name);
+
+            let mut full_name = String::new();
+            for scope in scope[..level].iter() {
+                full_name.push_str(scope);
+                full_name.push_str("::");
+            }
+            full_name.push_str(name);
+
+            if let Some(addr) = label_map.get(&full_name) {
+                *addr as i64
+            } else {
+                // TODO: label not found error
+                return None;
+            }
+        }
+        Expression::Define(name) => {
+            if let Some(val) = constant_map.get(*name) {
+                *val
+            } else {
+                // TODO: constant not found error
+                return None;
+            }
+        }
         Expression::UnaryOperator(op, sub_expr) => {
-            let sub_val = evaluate_folded(sub_expr, constant_map, label_map);
+            let sub_val = evaluate_folded(writer, sub_expr, scope, constant_map, label_map)?;
             evaluate_unary_op(op, sub_val)
         }
         Expression::BinaryOperator(op, lhs_expr, rhs_expr) => {
-            let lhs_val = evaluate_folded(lhs_expr, constant_map, label_map);
-            let rhs_val = evaluate_folded(rhs_expr, constant_map, label_map);
+            let lhs_val = evaluate_folded(writer, lhs_expr, scope, constant_map, label_map)?;
+            let rhs_val = evaluate_folded(writer, rhs_expr, scope, constant_map, label_map)?;
             evaluate_binary_op(op, lhs_val, rhs_val)
         }
-        Expression::Parenthesized(expr) => evaluate_folded(expr, constant_map, label_map),
-    }
+        Expression::Parenthesized(expr) => {
+            evaluate_folded(writer, expr, scope, constant_map, label_map)?
+        }
+    })
 }
 
-fn fold_constants(lines: &[Line], label_map: &AHashMap<String, u32>) -> AHashMap<String, i64> {
-    let unfolded_map = find_constants(lines);
+fn fold_constants<W: WriteColor + Write>(
+    writer: &mut W,
+    lines: &[Line],
+    label_map: &AHashMap<String, u32>,
+) -> Option<AHashMap<String, i64>> {
+    let unfolded_map = find_constants(lines)?;
 
     let mut map = AHashMap::new();
     for (name, expr) in unfolded_map.iter() {
-        let val = evaluate(expr, &unfolded_map, label_map);
-
-        if map.insert(name.clone(), val).is_some() {
-            // TODO: duplicate constant error
-        }
+        let val = evaluate(writer, expr, &[], &unfolded_map, label_map)?;
+        map.insert(name.clone(), val);
     }
 
-    map
+    Some(map)
 }
 
 fn tokenize_file<W: WriteColor + Write>(
@@ -613,6 +641,33 @@ fn to_unicode_bytes(s: &str) -> Vec<u8> {
     bytes
 }
 
+macro_rules! def_int_to_bytes {
+    ($name:ident, $t:ty) => {
+        fn $name<'a, W: WriteColor + Write>(
+            writer: &mut W,
+            vals: &[Expression<'a>],
+            scope: &[&'a str],
+            constant_map: &AHashMap<String, i64>,
+            label_map: &AHashMap<String, u32>,
+        ) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity(vals.len() * std::mem::size_of::<$t>());
+
+            for expr in vals.iter() {
+                let val = evaluate_folded(writer, expr, scope, constant_map, label_map).unwrap_or(0)
+                    as $t;
+                bytes.extend_from_slice(&val.to_le_bytes());
+            }
+
+            bytes
+        }
+    };
+}
+
+def_int_to_bytes!(to_int8_bytes, u8);
+def_int_to_bytes!(to_int16_bytes, u16);
+def_int_to_bytes!(to_int32_bytes, u32);
+def_int_to_bytes!(to_int64_bytes, u64);
+
 #[rustfmt::skip]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -635,15 +690,103 @@ enum AluOp {
     Slc    = 0xF,
 }
 
-fn encode_alu_instruction(
+fn encode_alu_instruction<W: WriteColor + Write>(
+    writer: &mut W,
     op: AluOp,
     d: Register,
     l: Register,
     r: &AluRhs,
+    scope: &[&str],
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
-) -> u32 {
-    todo!()
+) -> Option<u32> {
+    let op_bin = (op as u8) as u32;
+    let d_bin = d.0.into_inner() as u32;
+    let l_bin = l.0.into_inner() as u32;
+
+    let (r_bin, grp_bin) = match r {
+        AluRhs::Register(r) => (r.0.into_inner() as u32, 0b001),
+        AluRhs::Immediate(r) => (
+            evaluate_folded(writer, r, scope, constant_map, label_map)? as u32,
+            0b010,
+        ),
+    };
+
+    Some((r_bin << 17) | (l_bin << 12) | (d_bin << 7) | (op_bin << 3) | grp_bin)
+}
+
+#[rustfmt::skip]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum LoadKind {
+    Ld    = 0b0000,
+    Ld8   = 0b0001,
+    Ld8s  = 0b0101,
+    Ld16  = 0b0010,
+    Ld16s = 0b0110,
+    In    = 0b0011,
+}
+
+fn encode_load_instruction<W: WriteColor + Write>(
+    writer: &mut W,
+    kind: LoadKind,
+    d: Register,
+    s: Register,
+    o: &Expression,
+    scope: &[&str],
+    constant_map: &AHashMap<String, i64>,
+    label_map: &AHashMap<String, u32>,
+) -> Option<u32> {
+    let kind_bin = (kind as u8) as u32;
+    let d_bin = d.0.into_inner() as u32;
+    let s_bin = s.0.into_inner() as u32;
+    let o_bin = evaluate_folded(writer, o, scope, constant_map, label_map)? as u32;
+
+    Some((o_bin << 17) | (s_bin << 12) | (d_bin << 7) | (kind_bin << 3) | 0b011)
+}
+
+#[rustfmt::skip]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum StoreKind {
+    St   = 0b1000,
+    St8  = 0b1001,
+    St16 = 0b1010,
+    Out  = 0b1011,
+}
+
+fn encode_store_instruction<W: WriteColor + Write>(
+    writer: &mut W,
+    kind: StoreKind,
+    d: Register,
+    o: &Expression,
+    s: Register,
+    scope: &[&str],
+    constant_map: &AHashMap<String, i64>,
+    label_map: &AHashMap<String, u32>,
+) -> Option<u32> {
+    let kind_bin = (kind as u8) as u32;
+    let d_bin = d.0.into_inner() as u32;
+    let s_bin = s.0.into_inner() as u32;
+    let o_bin = evaluate_folded(writer, o, scope, constant_map, label_map)? as u32;
+
+    Some((o_bin << 17) | (s_bin << 12) | (d_bin << 7) | (kind_bin << 3) | 0b011)
+}
+
+fn encode_jump_instruction<W: WriteColor + Write>(
+    writer: &mut W,
+    s: Register,
+    o: &Expression,
+    indirect: bool,
+    scope: &[&str],
+    constant_map: &AHashMap<String, i64>,
+    label_map: &AHashMap<String, u32>,
+) -> Option<u32> {
+    let s_bin = s.0.into_inner() as u32;
+    let o_bin = evaluate_folded(writer, o, scope, constant_map, label_map)? as u32;
+    let op_bin = if indirect { 0x1 } else { 0x0 };
+
+    Some((o_bin << 17) | (s_bin << 12) | (op_bin << 3) | 0b100)
 }
 
 #[rustfmt::skip]
@@ -667,14 +810,36 @@ enum BranchKind {
     Always               = 0xF,
 }
 
-fn encode_branch_instruction(
+fn encode_branch_instruction<W: WriteColor + Write>(
+    writer: &mut W,
     kind: BranchKind,
     d: &Expression,
+    scope: &[&str],
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
     current_address: u32,
-) -> u32 {
-    todo!()
+) -> Option<u32> {
+    let kind_bin = (kind as u8) as u32;
+    let d_bin = evaluate_folded(writer, d, scope, constant_map, label_map)?;
+
+    if (d_bin & 0x3) != 0 {
+        // TODO: warn unaligned branch
+    }
+
+    let rel = d_bin - (current_address as i64);
+    if let Some(rel) = i22::new(rel) {
+        let rel = (rel.into_inner() as u32) & 0x3F_FFFC;
+        Some(
+            ((rel & 0x20_0000) << 10)
+                | ((rel & 0x3FFC) << 17)
+                | ((rel & 0x1F_C000) >> 2)
+                | (kind_bin << 3)
+                | 0b101,
+        )
+    } else {
+        // TODO: error out of range branch
+        None
+    }
 }
 
 #[rustfmt::skip]
@@ -685,214 +850,475 @@ enum UpperImmediateKind {
     AddPc = 0x1,
 }
 
-fn encode_upper_immediate_instruction(
+fn encode_upper_immediate_instruction<W: WriteColor + Write>(
+    writer: &mut W,
     kind: UpperImmediateKind,
     d: Register,
     ui: &Expression,
+    scope: &[&str],
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
-) -> u32 {
-    todo!()
+) -> Option<u32> {
+    let kind_bin = (kind as u8) as u32;
+    let d_bin = d.0.into_inner() as u32;
+    let ui_bin = evaluate_folded(writer, ui, scope, constant_map, label_map)? as u32;
+
+    Some(
+        (ui_bin & 0x8000_0000)
+            | ((ui_bin & 0x3000) << 29)
+            | ((ui_bin & 0x7FFF_C000) << 12)
+            | (d_bin << 7)
+            | (kind_bin << 3)
+            | 0b110,
+    )
 }
 
-fn encode_instruction(
+fn encode_instruction<W: WriteColor + Write>(
+    writer: &mut W,
     inst: &Instruction,
+    scope: &[&str],
     constant_map: &AHashMap<String, i64>,
     label_map: &AHashMap<String, u32>,
     current_address: u32,
-) -> u32 {
+) -> Option<u32> {
+    if (current_address & 0x3) != 0 {
+        // TODO: warn unaligned instruction
+    }
+
     match inst {
-        Instruction::Nop => (0x0 << 3) | 0x0,
-        Instruction::Brk => (0x1 << 3) | 0x0,
-        Instruction::Hlt => (0x2 << 3) | 0x0,
-        Instruction::Err => (0x3 << 3) | 0x0,
-        Instruction::Add { d, l, r } => {
-            encode_alu_instruction(AluOp::Add, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::AddC { d, l, r } => {
-            encode_alu_instruction(AluOp::AddC, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::Sub { d, l, r } => {
-            encode_alu_instruction(AluOp::Sub, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::SubB { d, l, r } => {
-            encode_alu_instruction(AluOp::SubB, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::And { d, l, r } => {
-            encode_alu_instruction(AluOp::And, *d, *l, r, constant_map, label_map)
-        }
+        Instruction::Nop => Some((0x0 << 3) | 0b000),
+        Instruction::Brk => Some((0x1 << 3) | 0b000),
+        Instruction::Hlt => Some((0x2 << 3) | 0b000),
+        Instruction::Err => Some((0x3 << 3) | 0b000),
+        Instruction::Add { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Add,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::AddC { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::AddC,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Sub { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Sub,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::SubB { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::SubB,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::And { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::And,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
         Instruction::Or { d, l, r } => {
-            encode_alu_instruction(AluOp::Or, *d, *l, r, constant_map, label_map)
+            encode_alu_instruction(writer, AluOp::Or, *d, *l, r, scope, constant_map, label_map)
         }
-        Instruction::Xor { d, l, r } => {
-            encode_alu_instruction(AluOp::Xor, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::Shl { d, l, r } => {
-            encode_alu_instruction(AluOp::Shl, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::Lsr { d, l, r } => {
-            encode_alu_instruction(AluOp::Lsr, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::Asr { d, l, r } => {
-            encode_alu_instruction(AluOp::Asr, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::Mul { d, l, r } => {
-            encode_alu_instruction(AluOp::Mul, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::MulHuu { d, l, r } => {
-            encode_alu_instruction(AluOp::MulHuu, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::MulHss { d, l, r } => {
-            encode_alu_instruction(AluOp::MulHss, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::MulHsu { d, l, r } => {
-            encode_alu_instruction(AluOp::MulHsu, *d, *l, r, constant_map, label_map)
-        }
-        Instruction::CSub { d, l, r } => {
-            encode_alu_instruction(AluOp::CSub, *d, *l, r, constant_map, label_map)
-        }
+        Instruction::Xor { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Xor,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Shl { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Shl,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Lsr { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Lsr,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Asr { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Asr,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Mul { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::Mul,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::MulHuu { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::MulHuu,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::MulHss { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::MulHss,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::MulHsu { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::MulHsu,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::CSub { d, l, r } => encode_alu_instruction(
+            writer,
+            AluOp::CSub,
+            *d,
+            *l,
+            r,
+            scope,
+            constant_map,
+            label_map,
+        ),
         Instruction::Slc { d, s } => encode_alu_instruction(
+            writer,
             AluOp::Slc,
             *d,
             *s,
             &AluRhs::Register(Register::ZERO),
+            scope,
             constant_map,
             label_map,
         ),
-        Instruction::Ld { d, s, o } => todo!(),
-        Instruction::Ld8 { d, s, o } => todo!(),
-        Instruction::Ld8s { d, s, o } => todo!(),
-        Instruction::Ld16 { d, s, o } => todo!(),
-        Instruction::Ld16s { d, s, o } => todo!(),
-        Instruction::In { d, s, o } => todo!(),
-        Instruction::St { d, o, s } => todo!(),
-        Instruction::St8 { d, o, s } => todo!(),
-        Instruction::St16 { d, o, s } => todo!(),
-        Instruction::Out { d, o, s } => todo!(),
-        Instruction::Jmp { s, o, indirect } => todo!(),
+        Instruction::Ld { d, s, o } => encode_load_instruction(
+            writer,
+            LoadKind::Ld,
+            *d,
+            *s,
+            o,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Ld8 { d, s, o } => encode_load_instruction(
+            writer,
+            LoadKind::Ld8,
+            *d,
+            *s,
+            o,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Ld8s { d, s, o } => encode_load_instruction(
+            writer,
+            LoadKind::Ld8s,
+            *d,
+            *s,
+            o,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Ld16 { d, s, o } => encode_load_instruction(
+            writer,
+            LoadKind::Ld16,
+            *d,
+            *s,
+            o,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Ld16s { d, s, o } => encode_load_instruction(
+            writer,
+            LoadKind::Ld16s,
+            *d,
+            *s,
+            o,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::In { d, s, o } => encode_load_instruction(
+            writer,
+            LoadKind::In,
+            *d,
+            *s,
+            o,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::St { d, o, s } => encode_store_instruction(
+            writer,
+            StoreKind::St,
+            *d,
+            o,
+            *s,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::St8 { d, o, s } => encode_store_instruction(
+            writer,
+            StoreKind::St8,
+            *d,
+            o,
+            *s,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::St16 { d, o, s } => encode_store_instruction(
+            writer,
+            StoreKind::St16,
+            *d,
+            o,
+            *s,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Out { d, o, s } => encode_store_instruction(
+            writer,
+            StoreKind::Out,
+            *d,
+            o,
+            *s,
+            scope,
+            constant_map,
+            label_map,
+        ),
+        Instruction::Jmp { s, o, indirect } => {
+            encode_jump_instruction(writer, *s, o, *indirect, scope, constant_map, label_map)
+        }
         Instruction::BrC { d } => encode_branch_instruction(
+            writer,
             BranchKind::Carry,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrZ { d } => encode_branch_instruction(
+            writer,
             BranchKind::Zero,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrS { d } => encode_branch_instruction(
+            writer,
             BranchKind::Sign,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrO { d } => encode_branch_instruction(
+            writer,
             BranchKind::Overflow,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrNc { d } => encode_branch_instruction(
+            writer,
             BranchKind::NotCarry,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrNz { d } => encode_branch_instruction(
+            writer,
             BranchKind::NotZero,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrNs { d } => encode_branch_instruction(
+            writer,
             BranchKind::NotSign,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrNo { d } => encode_branch_instruction(
+            writer,
             BranchKind::NotOverflow,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrULe { d } => encode_branch_instruction(
+            writer,
             BranchKind::UnsignedLessOrEqual,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrUG { d } => encode_branch_instruction(
+            writer,
             BranchKind::UnsignedGreater,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrSL { d } => encode_branch_instruction(
+            writer,
             BranchKind::SignedLess,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrSGe { d } => encode_branch_instruction(
+            writer,
             BranchKind::SignedGreaterOrEqual,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrSLe { d } => encode_branch_instruction(
+            writer,
             BranchKind::SignedLessOrEqual,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::BrSG { d } => encode_branch_instruction(
+            writer,
             BranchKind::SignedGreater,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::Bra { d } => encode_branch_instruction(
+            writer,
             BranchKind::Always,
             d,
+            scope,
             constant_map,
             label_map,
             current_address,
         ),
         Instruction::LdUi { d, ui } => encode_upper_immediate_instruction(
+            writer,
             UpperImmediateKind::Load,
             *d,
             ui,
+            scope,
             constant_map,
             label_map,
         ),
         Instruction::AddPcUi { d, ui } => encode_upper_immediate_instruction(
+            writer,
             UpperImmediateKind::AddPc,
             *d,
             ui,
+            scope,
             constant_map,
             label_map,
         ),
-        Instruction::Sys => (0x0 << 3) | 0x7,
-        Instruction::ClrK => (0x1 << 3) | 0x7,
+        Instruction::Sys => Some((0x0 << 3) | 0b111),
+        Instruction::ClrK => Some((0x1 << 3) | 0b111),
     }
 }
+
+const TEST_FILE: &str = "
+$UART_DATA_IN      = 0x004 // read-only
+$UART_DATA_OUT     = 0x005 // write-only
+$UART_INPUT_COUNT  = 0x006 // read-only
+$UART_OUTPUT_COUNT = 0x007 // read-only
+
+serial_read_byte:
+    .wait:
+        in t0, [$UART_INPUT_COUNT]
+        test t0
+        br.z .wait
+
+    in a0, [$UART_DATA_IN]
+    jmp ra
+";
 
 fn main() -> std::io::Result<()> {
     use termcolor::*;
@@ -924,50 +1350,143 @@ fn main() -> std::io::Result<()> {
     }
 
     if !has_error {
-        let label_map = associate_label_addresses(&lines);
-        let constant_map = fold_constants(&lines, &label_map);
+        if let Some(label_map) = associate_label_addresses(&lines) {
+            if let Some(constant_map) = fold_constants(&mut stdout, &lines, &label_map) {
+                let mut output = AnnotatedOutput::new();
+                let output: &mut dyn Output = &mut output;
 
-        let mut output = BinaryOutput::new();
-        let output: &mut dyn Output = &mut output;
+                let mut scope_stack = Vec::new();
 
-        for line in lines.iter() {
-            match line.kind() {
-                LineKind::Directive(dir) => match dir {
-                    AssemblerDirective::Address(address) => output.set_address(*address)?,
-                    AssemblerDirective::Align(align) => output.align_address(*align)?,
-                    AssemblerDirective::Int8(vals) => todo!(),
-                    AssemblerDirective::Int16(vals) => todo!(),
-                    AssemblerDirective::Int32(vals) => todo!(),
-                    AssemblerDirective::Int64(vals) => todo!(),
-                    AssemblerDirective::Ascii(s) => output.write(
-                        &to_ascii_bytes(s, false),
-                        line.number(),
-                        line.span().text(),
-                    )?,
-                    AssemblerDirective::AsciiZ(s) => {
-                        output.write(&to_ascii_bytes(s, true), line.number(), line.span().text())?
+                for line in lines.iter() {
+                    match line.kind() {
+                        LineKind::Label(name) => {
+                            let (level, name) = count_leading_dots(name);
+
+                            scope_stack.resize(level, "");
+                            scope_stack.push(name);
+                        }
+                        LineKind::Directive(dir) => match dir {
+                            AssemblerDirective::Address(address) => output.set_address(*address)?,
+                            AssemblerDirective::Align(align) => output.align_address(*align)?,
+                            AssemblerDirective::Int8(vals) => {
+                                let bytes = to_int8_bytes(
+                                    &mut stdout,
+                                    vals,
+                                    &scope_stack,
+                                    &constant_map,
+                                    &label_map,
+                                );
+                                output.write_data(
+                                    &mut stdout,
+                                    &bytes,
+                                    line.number(),
+                                    line.span().text(),
+                                )?
+                            }
+                            AssemblerDirective::Int16(vals) => {
+                                let bytes = to_int16_bytes(
+                                    &mut stdout,
+                                    vals,
+                                    &scope_stack,
+                                    &constant_map,
+                                    &label_map,
+                                );
+                                output.write_data(
+                                    &mut stdout,
+                                    &bytes,
+                                    line.number(),
+                                    line.span().text(),
+                                )?
+                            }
+                            AssemblerDirective::Int32(vals) => {
+                                let bytes = to_int32_bytes(
+                                    &mut stdout,
+                                    vals,
+                                    &scope_stack,
+                                    &constant_map,
+                                    &label_map,
+                                );
+                                output.write_data(
+                                    &mut stdout,
+                                    &bytes,
+                                    line.number(),
+                                    line.span().text(),
+                                )?
+                            }
+                            AssemblerDirective::Int64(vals) => {
+                                let bytes = to_int64_bytes(
+                                    &mut stdout,
+                                    vals,
+                                    &scope_stack,
+                                    &constant_map,
+                                    &label_map,
+                                );
+                                output.write_data(
+                                    &mut stdout,
+                                    &bytes,
+                                    line.number(),
+                                    line.span().text(),
+                                )?
+                            }
+                            AssemblerDirective::Ascii(s) => output.write_data(
+                                &mut stdout,
+                                &to_ascii_bytes(s, false),
+                                line.number(),
+                                line.span().text(),
+                            )?,
+                            AssemblerDirective::AsciiZ(s) => output.write_data(
+                                &mut stdout,
+                                &to_ascii_bytes(s, true),
+                                line.number(),
+                                line.span().text(),
+                            )?,
+                            AssemblerDirective::Utf8(s) => output.write_data(
+                                &mut stdout,
+                                s.as_bytes(),
+                                line.number(),
+                                line.span().text(),
+                            )?,
+                            AssemblerDirective::Utf16(s) => output.write_data(
+                                &mut stdout,
+                                &to_utf16_bytes(s),
+                                line.number(),
+                                line.span().text(),
+                            )?,
+                            AssemblerDirective::Unicode(s) => output.write_data(
+                                &mut stdout,
+                                &to_unicode_bytes(s),
+                                line.number(),
+                                line.span().text(),
+                            )?,
+                            _ => {}
+                        },
+                        LineKind::Instruction(inst) => {
+                            if let Some(word) = encode_instruction(
+                                &mut stdout,
+                                inst,
+                                &scope_stack,
+                                &constant_map,
+                                &label_map,
+                                output.current_address(),
+                            ) {
+                                output.write_instruction(
+                                    &mut stdout,
+                                    word,
+                                    line.number(),
+                                    line.span().text(),
+                                )?;
+                            } else {
+                                output.write_instruction(
+                                    &mut stdout,
+                                    (0x3 << 3) | 0b000u32,
+                                    line.number(),
+                                    line.span().text(),
+                                )?;
+                            }
+                        }
+                        _ => {}
                     }
-                    AssemblerDirective::Utf8(s) => {
-                        output.write(s.as_bytes(), line.number(), line.span().text())?
-                    }
-                    AssemblerDirective::Utf16(s) => {
-                        output.write(&to_utf16_bytes(s), line.number(), line.span().text())?
-                    }
-                    AssemblerDirective::Unicode(s) => {
-                        output.write(&to_unicode_bytes(s), line.number(), line.span().text())?
-                    }
-                    _ => {}
-                },
-                LineKind::Instruction(inst) => {
-                    let word = encode_instruction(
-                        inst,
-                        &constant_map,
-                        &label_map,
-                        output.current_address(),
-                    );
-                    output.write(&word.to_le_bytes(), line.number(), line.span().text())?;
                 }
-                _ => {}
             }
         }
     }

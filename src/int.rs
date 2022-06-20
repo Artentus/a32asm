@@ -102,24 +102,29 @@ macro_rules! def_sized_int {
                 }
             }
 
-            fn checked_add(self, rhs: Self) -> Option<Self> {
+            pub fn checked_add(self, rhs: Self) -> Option<Self> {
                 let result = self.0 .0.checked_add(rhs.0 .0)?;
                 Self::new(result)
             }
 
-            fn checked_sub(self, rhs: Self) -> Option<Self> {
+            pub fn checked_sub(self, rhs: Self) -> Option<Self> {
                 let result = self.0 .0.checked_sub(rhs.0 .0)?;
                 Self::new(result)
             }
 
-            fn saturating_add(self, rhs: Self) -> Self {
+            pub fn saturating_add(self, rhs: Self) -> Self {
                 let result = self.0 .0.saturating_add(rhs.0 .0);
                 Self::new_clamp(result)
             }
 
-            fn saturating_sub(self, rhs: Self) -> Self {
+            pub fn saturating_sub(self, rhs: Self) -> Self {
                 let result = self.0 .0.saturating_sub(rhs.0 .0);
                 Self::new_clamp(result)
+            }
+
+            #[inline]
+            pub const fn into_inner(self) -> $it {
+                self.0 .0
             }
         }
 
@@ -164,5 +169,4 @@ macro_rules! def_sized_int {
 }
 
 def_sized_int!(u5 : u8[5]);
-def_sized_int!(i15 : i16[15]);
-def_sized_int!(i22 : i32[22]);
+def_sized_int!(i22 : i64[22]);
