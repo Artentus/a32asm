@@ -1,4 +1,4 @@
-use crate::{Message, MessageKind, OptionalResult, Register};
+use crate::{Message, MessageKind, OptionalResult, Register, SharedString};
 use std::borrow::Cow;
 use std::iter::Peekable;
 use std::path::{Path, PathBuf};
@@ -11,11 +11,25 @@ pub struct InputFile {
     text: Cow<'static, str>,
 }
 impl InputFile {
+    pub fn new(path: PathBuf) -> std::io::Result<Rc<Self>> {
+        let text = std::fs::read_to_string(&path)?;
+
+        Ok(Rc::new(Self {
+            path,
+            text: text.into(),
+        }))
+    }
+
     pub fn new_from_memory<T: Into<Cow<'static, str>>>(name: &str, text: T) -> Rc<Self> {
         Rc::new(Self {
             path: name.into(),
             text: text.into(),
         })
+    }
+
+    #[inline]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -485,11 +499,11 @@ pub enum TokenKind {
     Operator(Operator),
     IntegerLiteral(i64),
     CharLiteral(char),
-    StringLiteral(String),
+    StringLiteral(SharedString),
     Directive(Directive),
     Register(Register),
     Keyword(Keyword),
-    Identifier(String),
+    Identifier(SharedString),
 }
 impl TokenKind {
     #[inline]
@@ -504,7 +518,7 @@ impl TokenKind {
 
     #[inline]
     fn dummy_string() -> Self {
-        Self::StringLiteral("".to_string())
+        Self::StringLiteral("".into())
     }
 }
 
@@ -1297,7 +1311,9 @@ impl Lexer {
                     match self
                         .unescape_string(self.span(), self.get_token(TokenKind::dummy_string()))
                     {
-                        Ok(s) => LexerResult::Some(self.get_token(TokenKind::StringLiteral(s))),
+                        Ok(s) => {
+                            LexerResult::Some(self.get_token(TokenKind::StringLiteral(s.into())))
+                        }
                         Err(err) => LexerResult::Err(err),
                     }
                 } else {
@@ -1398,7 +1414,7 @@ impl Lexer {
 
                 if s.trim_start_matches('_').len() == 0 {
                     let err = LexerError::new(
-                        self.get_token(TokenKind::Identifier(s)),
+                        self.get_token(TokenKind::Identifier(s.into())),
                         self.span(),
                         "identifier only contains underscores",
                     );
@@ -1406,7 +1422,7 @@ impl Lexer {
                     LexerResult::Err(err)
                 } else if s.trim_start_matches('.').len() == 0 {
                     let err = LexerError::new(
-                        self.get_token(TokenKind::Identifier(s)),
+                        self.get_token(TokenKind::Identifier(s.into())),
                         self.span(),
                         "identifier only contains dots",
                     );
@@ -1425,7 +1441,7 @@ impl Lexer {
                         }
                     }
 
-                    LexerResult::Some(self.get_token(TokenKind::Identifier(s)))
+                    LexerResult::Some(self.get_token(TokenKind::Identifier(s.into())))
                 }
             } else {
                 LexerResult::None
@@ -1679,26 +1695,20 @@ fn parses_char_literal_hex_escapes() {
 
 #[test]
 fn parses_string_literals() {
-    test_lexer(
-        "\"string\"",
-        &[TokenKind::StringLiteral("string".to_string())],
-    );
+    test_lexer("\"string\"", &[TokenKind::StringLiteral("string".into())]);
 }
 
 #[test]
 fn parses_string_literal_escapes() {
     test_lexer(
         "\"\\\\\\n\\0\"",
-        &[TokenKind::StringLiteral("\\\n\0".to_string())],
+        &[TokenKind::StringLiteral("\\\n\0".into())],
     );
 }
 
 #[test]
 fn parses_string_literal_hex_escapes() {
-    test_lexer(
-        "\"\\x20\\u0020\"",
-        &[TokenKind::StringLiteral("  ".to_string())],
-    );
+    test_lexer("\"\\x20\\u0020\"", &[TokenKind::StringLiteral("  ".into())]);
 }
 
 #[test]
@@ -1727,9 +1737,9 @@ fn parses_registers() {
         &[
             TokenKind::Register(Register(u5!(15))),
             TokenKind::NewLine,
-            TokenKind::Register(Register(u5!(0))),
+            TokenKind::Register(Register::ZERO),
             TokenKind::NewLine,
-            TokenKind::Register(Register(u5!(4))),
+            TokenKind::Register(Register::A0),
         ],
     );
 }
@@ -1739,15 +1749,15 @@ fn parses_identifiers() {
     test_lexer(
         "foo\n_bar\nbaz_\n_0\na.0",
         &[
-            TokenKind::Identifier("foo".to_string()),
+            TokenKind::Identifier("foo".into()),
             TokenKind::NewLine,
-            TokenKind::Identifier("_bar".to_string()),
+            TokenKind::Identifier("_bar".into()),
             TokenKind::NewLine,
-            TokenKind::Identifier("baz_".to_string()),
+            TokenKind::Identifier("baz_".into()),
             TokenKind::NewLine,
-            TokenKind::Identifier("_0".to_string()),
+            TokenKind::Identifier("_0".into()),
             TokenKind::NewLine,
-            TokenKind::Identifier("a.0".to_string()),
+            TokenKind::Identifier("a.0".into()),
         ],
     );
 }

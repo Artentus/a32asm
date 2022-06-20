@@ -25,6 +25,8 @@ use std::ops::{ControlFlow, FromResidual, Try};
 use std::rc::Rc;
 use termcolor::{Color, ColorSpec, WriteColor};
 
+pub type SharedString = Rc<str>;
+
 #[derive(Debug)]
 pub enum OptionalResult<T, E> {
     Some(T),
@@ -402,12 +404,12 @@ fn associate_label_addresses(lines: &[Line]) -> Result<AHashMap<String, u32>, Me
     Ok(map)
 }
 
-fn find_constants<'a>(lines: &'a [Line]) -> Result<AHashMap<String, &'a Expression<'a>>, Message> {
+fn find_constants(lines: &[Line]) -> Result<AHashMap<SharedString, &Expression>, Message> {
     let mut map = AHashMap::new();
 
     for line in lines.iter() {
         if let LineKind::Define(name, expr) = line.kind() {
-            if map.insert(name.to_string(), expr).is_some() {
+            if map.insert(Rc::clone(name), expr).is_some() {
                 let msg = Message {
                     kind: MessageKind::Error,
                     token_span: line.span().clone(),
@@ -463,10 +465,10 @@ fn evaluate_binary_op(op: &BinaryOperator, lhs_val: i64, rhs_val: i64) -> i64 {
     }
 }
 
-fn evaluate<'a>(
-    expr: &'a Expression<'a>,
-    scope: &[&'a str],
-    constant_map: &AHashMap<String, &'a Expression<'a>>,
+fn evaluate(
+    expr: &Expression,
+    scope: &[&str],
+    constant_map: &AHashMap<SharedString, &Expression>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<i64, Message> {
     Ok(match expr.kind() {
@@ -496,7 +498,7 @@ fn evaluate<'a>(
             }
         }
         ExpressionKind::Define(name) => {
-            if let Some(sub_expr) = constant_map.get(*name) {
+            if let Some(sub_expr) = constant_map.get(name) {
                 evaluate(sub_expr, scope, constant_map, label_map)?
             } else {
                 let msg = Message {
@@ -522,10 +524,10 @@ fn evaluate<'a>(
     })
 }
 
-fn evaluate_folded<'a>(
-    expr: &'a Expression<'a>,
-    scope: &[&'a str],
-    constant_map: &AHashMap<String, i64>,
+fn evaluate_folded(
+    expr: &Expression,
+    scope: &[&str],
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<i64, Message> {
     Ok(match expr.kind() {
@@ -555,7 +557,7 @@ fn evaluate_folded<'a>(
             }
         }
         ExpressionKind::Define(name) => {
-            if let Some(val) = constant_map.get(*name) {
+            if let Some(val) = constant_map.get(name) {
                 *val
             } else {
                 let msg = Message {
@@ -586,7 +588,7 @@ fn evaluate_folded<'a>(
 fn fold_constants(
     lines: &[Line],
     label_map: &AHashMap<String, u32>,
-) -> Result<AHashMap<String, i64>, Message> {
+) -> Result<AHashMap<SharedString, i64>, Message> {
     let unfolded_map = find_constants(lines)?;
 
     let mut map = AHashMap::new();
@@ -676,11 +678,11 @@ fn to_unicode_bytes(s: &str) -> Vec<u8> {
 
 macro_rules! def_int_to_bytes {
     ($name:ident, $t:ty) => {
-        fn $name<'a, W: WriteColor + Write>(
+        fn $name<W: WriteColor + Write>(
             writer: &mut W,
-            vals: &[Expression<'a>],
-            scope: &[&'a str],
-            constant_map: &AHashMap<String, i64>,
+            vals: &[Expression],
+            scope: &[&str],
+            constant_map: &AHashMap<SharedString, i64>,
             label_map: &AHashMap<String, u32>,
         ) -> std::io::Result<Vec<u8>> {
             let mut bytes = Vec::with_capacity(vals.len() * std::mem::size_of::<$t>());
@@ -735,7 +737,7 @@ fn encode_alu_instruction(
     l: Register,
     r: &AluRhs,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let op_bin = (op as u8) as u32;
@@ -771,7 +773,7 @@ fn encode_load_instruction(
     s: Register,
     o: &Expression,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let kind_bin = (kind as u8) as u32;
@@ -798,7 +800,7 @@ fn encode_store_instruction(
     o: &Expression,
     s: Register,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let kind_bin = (kind as u8) as u32;
@@ -814,7 +816,7 @@ fn encode_jump_instruction(
     o: &Expression,
     indirect: bool,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let s_bin = s.0.into_inner() as u32;
@@ -849,7 +851,7 @@ fn encode_branch_instruction(
     kind: BranchKind,
     d: &Expression,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
     current_address: u32,
     warnings: &mut Vec<Message>,
@@ -902,7 +904,7 @@ fn encode_upper_immediate_instruction(
     d: Register,
     ui: &Expression,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let kind_bin = (kind as u8) as u32;
@@ -921,7 +923,7 @@ fn encode_instruction(
     inst: &Instruction,
     line_span: &TextSpan,
     scope: &[&str],
-    constant_map: &AHashMap<String, i64>,
+    constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
     current_address: u32,
     warnings: &mut Vec<Message>,
@@ -1054,6 +1056,37 @@ serial_read_byte:
     jmp ra
 ";
 
+fn parse_file<W: WriteColor + Write>(
+    file: &Rc<InputFile>,
+    lines: &mut Vec<Line>,
+    line_start: &mut usize,
+    writer: &mut W,
+) -> std::io::Result<bool> {
+    let (tokens, line_bounds, mut has_error) = tokenize_file(&file, writer)?;
+
+    for line_end in line_bounds {
+        match parse_line(&tokens[*line_start..line_end]) {
+            Ok(line) => {
+                if let LineKind::Directive(AssemblerDirective::Include(path)) = line.kind() {
+                    let current_dir = file.path().parent().expect("invalid file path");
+                    let include_file = InputFile::new(current_dir.join(path.as_ref()))?;
+                    has_error |= parse_file(&include_file, lines, line_start, writer)?;
+                } else {
+                    lines.push(line);
+                }
+            }
+            Err(err) => {
+                has_error = true;
+                err.pretty_print(writer)?;
+            }
+        }
+
+        *line_start = line_end;
+    }
+
+    Ok(has_error)
+}
+
 fn main() -> std::io::Result<()> {
     use termcolor::*;
 
@@ -1061,27 +1094,10 @@ fn main() -> std::io::Result<()> {
     let mut stdout = stdout.lock();
 
     let file = InputFile::new_from_memory("test", TEST_FILE);
-    let (tokens, line_bounds, mut has_error) = tokenize_file(&file, &mut stdout)?;
 
     let mut lines = Vec::new();
     let mut line_start = 0;
-    for line_end in line_bounds {
-        match parse_line(&tokens[line_start..line_end]) {
-            Ok(line) => {
-                if let LineKind::Directive(AssemblerDirective::Include(path)) = line.kind() {
-                    // TODO: tokenize and parse included file
-                } else {
-                    lines.push(line);
-                }
-            }
-            Err(err) => {
-                has_error = true;
-                err.pretty_print(&mut stdout)?;
-            }
-        }
-
-        line_start = line_end;
-    }
+    let has_error = parse_file(&file, &mut lines, &mut line_start, &mut stdout)?;
 
     if !has_error {
         match associate_label_addresses(&lines) {
