@@ -103,7 +103,7 @@ impl Output for AnnotatedOutput {
     ) -> Result<()> {
         writeln!(
             writer,
-            "{:0>8X}: {:0>8X} | {}: {}",
+            "{:0>8X}: {:0>8X} | {: >4}: {}",
             self.current_address, inst, line, source
         )?;
         self.current_address += 4;
@@ -119,7 +119,7 @@ impl Output for AnnotatedOutput {
     ) -> Result<()> {
         writeln!(
             writer,
-            "{:0>8X}:{} | {}: {}",
+            "{:0>8X}:{} | {: >4}: {}",
             self.current_address,
             display_data(data),
             line,

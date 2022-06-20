@@ -216,6 +216,20 @@ fn operator<'a>(op: Operator) -> TokenParser<'a, ()> {
     })
 }
 
+fn operator_span<'a>(op: Operator) -> TokenParser<'a, TextSpan> {
+    parser!(input: TokenInput<'a> => {
+        if let Some(token) = input.peek() {
+            if token.kind() == &TokenKind::Operator(op) {
+                ParseResult::Match(input.advance(), token.span().clone())
+            } else {
+                ParseResult::NoMatch
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    })
+}
+
 fn integer_literal<'a>() -> TokenParser<'a, i64> {
     parser!(input: TokenInput<'a> => {
         if let Some(TokenKind::IntegerLiteral(val)) = input.peek_kind() {
@@ -226,10 +240,38 @@ fn integer_literal<'a>() -> TokenParser<'a, i64> {
     })
 }
 
-fn char_literal<'a>() -> TokenParser<'a, char> {
+fn integer_literal_span<'a>() -> TokenParser<'a, (i64, TextSpan)> {
     parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::CharLiteral(c)) = input.peek_kind() {
-            ParseResult::Match(input.advance(), *c)
+        if let Some(token) = input.peek() {
+            if let TokenKind::IntegerLiteral(val) = token.kind() {
+                ParseResult::Match(input.advance(), (*val, token.span().clone()))
+            } else {
+                ParseResult::NoMatch
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    })
+}
+
+//fn char_literal<'a>() -> TokenParser<'a, char> {
+//    parser!(input: TokenInput<'a> => {
+//        if let Some(TokenKind::CharLiteral(c)) = input.peek_kind() {
+//            ParseResult::Match(input.advance(), *c)
+//        } else {
+//            ParseResult::NoMatch
+//        }
+//    })
+//}
+
+fn char_literal_span<'a>() -> TokenParser<'a, (char, TextSpan)> {
+    parser!(input: TokenInput<'a> => {
+        if let Some(token) = input.peek() {
+            if let TokenKind::CharLiteral(c) = token.kind() {
+                ParseResult::Match(input.advance(), (*c, token.span().clone()))
+            } else {
+                ParseResult::NoMatch
+            }
         } else {
             ParseResult::NoMatch
         }
@@ -294,6 +336,20 @@ fn identifier<'a>() -> TokenParser<'a, &'a str> {
     })
 }
 
+fn identifier_span<'a>() -> TokenParser<'a, (&'a str, TextSpan)> {
+    parser!(input: TokenInput<'a> => {
+        if let Some(token) = input.peek() {
+            if let TokenKind::Identifier(ident) = token.kind() {
+                ParseResult::Match(input.advance(), (ident.as_ref(), token.span().clone()))
+            } else {
+                ParseResult::NoMatch
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    })
+}
+
 fn eof<'a>() -> TokenParser<'a, ()> {
     parser!(input: TokenInput<'a> => {
         if let Some(_) = input.peek() {
@@ -335,8 +391,8 @@ fn in_brackets<'a, T: 'a>(parser: TokenParser<'a, T>) -> TokenParser<'a, T> {
     })
 }
 
-fn label_ident<'a>() -> TokenParser<'a, &'a str> {
-    identifier()
+fn label_ident<'a>() -> TokenParser<'a, (&'a str, TextSpan)> {
+    identifier_span()
 }
 
 fn const_ident<'a>() -> TokenParser<'a, &'a str> {
@@ -345,6 +401,15 @@ fn const_ident<'a>() -> TokenParser<'a, &'a str> {
             "expected identifier",
             "`$` indices a constant identifier"
         ))
+}
+
+fn const_ident_span<'a>() -> TokenParser<'a, (&'a str, TextSpan)> {
+    (operator_span(Operator::Define)
+        & identifier_span().require(error!(
+            "expected identifier",
+            "`$` indices a constant identifier"
+        )))
+    .map(|(s1, (ident, s2))| (ident, s1.combine(&s2)))
 }
 
 fn comma_sep<'a>() -> TokenParser<'a, ()> {
@@ -412,7 +477,7 @@ impl Display for BinaryOperator {
 }
 
 #[derive(Debug, Clone)]
-pub enum Expression<'a> {
+pub enum ExpressionKind<'a> {
     IntegerConstant(i64),
     CharConstant(char),
     Label(&'a str),
@@ -421,40 +486,114 @@ pub enum Expression<'a> {
     BinaryOperator(BinaryOperator, Box<Expression<'a>>, Box<Expression<'a>>),
     Parenthesized(Box<Expression<'a>>),
 }
-impl Display for Expression<'_> {
+impl Display for ExpressionKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Expression::IntegerConstant(val) => write!(f, "{}", val),
-            Expression::CharConstant(c) => write!(f, "{}", c),
-            Expression::Label(name) => write!(f, "{}", name),
-            Expression::Define(name) => write!(f, "${}", name),
-            Expression::UnaryOperator(op, sub_expr) => write!(f, "{}{}", op, sub_expr),
-            Expression::BinaryOperator(op, lhs_expr, rhs_expr) => {
+            Self::IntegerConstant(val) => write!(f, "{}", val),
+            Self::CharConstant(c) => write!(f, "{}", c),
+            Self::Label(name) => write!(f, "{}", name),
+            Self::Define(name) => write!(f, "${}", name),
+            Self::UnaryOperator(op, sub_expr) => write!(f, "{}{}", op, sub_expr),
+            Self::BinaryOperator(op, lhs_expr, rhs_expr) => {
                 write!(f, "{} {} {}", lhs_expr, op, rhs_expr)
             }
-            Expression::Parenthesized(expr) => write!(f, "({})", expr),
+            Self::Parenthesized(expr) => write!(f, "({})", expr),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Expression<'a> {
+    kind: ExpressionKind<'a>,
+    span: Option<TextSpan>,
+}
+impl<'a> Expression<'a> {
+    #[inline]
+    const fn new_dummy_constant(val: i64) -> Self {
+        Self {
+            kind: ExpressionKind::IntegerConstant(val),
+            span: None,
+        }
+    }
+
+    fn new_integer(output: (i64, TextSpan)) -> Self {
+        Self {
+            kind: ExpressionKind::IntegerConstant(output.0),
+            span: Some(output.1),
+        }
+    }
+
+    fn new_char(output: (char, TextSpan)) -> Self {
+        Self {
+            kind: ExpressionKind::CharConstant(output.0),
+            span: Some(output.1),
+        }
+    }
+
+    fn new_label(output: (&'a str, TextSpan)) -> Self {
+        Self {
+            kind: ExpressionKind::Label(output.0),
+            span: Some(output.1),
+        }
+    }
+
+    fn new_define(output: (&'a str, TextSpan)) -> Self {
+        Self {
+            kind: ExpressionKind::Define(output.0),
+            span: Some(output.1),
+        }
+    }
+
+    fn new_unary(output: ((UnaryOperator, TextSpan), Expression<'a>)) -> Self {
+        let sub_span = output.1.span().unwrap().clone();
+        Self {
+            kind: ExpressionKind::UnaryOperator(output.0 .0, Box::new(output.1)),
+            span: Some(output.0 .1.combine(&sub_span)),
+        }
+    }
+
+    fn new_parenthesized(expr: Expression<'a>) -> Self {
+        let span = expr.span().unwrap().clone();
+        Self {
+            kind: ExpressionKind::Parenthesized(Box::new(expr)),
+            span: Some(span),
+        }
+    }
+
+    #[inline]
+    pub const fn kind(&self) -> &ExpressionKind<'a> {
+        &self.kind
+    }
+
+    #[inline]
+    pub const fn span(&self) -> Option<&TextSpan> {
+        self.span.as_ref()
+    }
+}
+impl Display for Expression<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.kind, f)
     }
 }
 
 fn leaf_expr<'a>() -> TokenParser<'a, Expression<'a>> {
     paren_expr()
-        | integer_literal().map(|val| Expression::IntegerConstant(val))
-        | char_literal().map(|c| Expression::CharConstant(c))
-        | label_ident().map(|ident| Expression::Label(ident))
-        | const_ident().map(|ident| Expression::Define(ident))
+        | integer_literal_span().map(Expression::new_integer)
+        | char_literal_span().map(Expression::new_char)
+        | label_ident().map(Expression::new_label)
+        | const_ident_span().map(Expression::new_define)
 }
 
-fn unary_op<'a>() -> TokenParser<'a, UnaryOperator> {
-    operator(Operator::Plus).map_to(UnaryOperator::Positive)
-        | operator(Operator::Minus).map_to(UnaryOperator::Negative)
-        | operator(Operator::Not).map_to(UnaryOperator::Not)
+fn unary_op<'a>() -> TokenParser<'a, (UnaryOperator, TextSpan)> {
+    operator_span(Operator::Plus).map(|span| (UnaryOperator::Positive, span))
+        | operator_span(Operator::Minus).map(|span| (UnaryOperator::Negative, span))
+        | operator_span(Operator::Not).map(|span| (UnaryOperator::Not, span))
 }
 
 fn unary_expr<'a>() -> TokenParser<'a, Expression<'a>> {
     leaf_expr()
         | (unary_op() << whitespace0() & leaf_expr().require(error!("expected expression")))
-            .map(|(op, expr)| Expression::UnaryOperator(op, Box::new(expr)))
+            .map(Expression::new_unary)
 }
 
 fn aggregate_exprs<'a>(
@@ -462,7 +601,12 @@ fn aggregate_exprs<'a>(
 ) -> Expression<'a> {
     let mut expr = output.0;
     for (op, rhs) in output.1 {
-        expr = Expression::BinaryOperator(op, Box::new(expr), Box::new(rhs));
+        let span = expr.span().unwrap().combine(rhs.span().unwrap());
+
+        expr = Expression {
+            kind: ExpressionKind::BinaryOperator(op, Box::new(expr), Box::new(rhs)),
+            span: Some(span),
+        };
     }
     expr
 }
@@ -576,7 +720,7 @@ fn paren_expr<'a>() -> TokenParser<'a, Expression<'a>> {
                     "matching open paranthesis here",
                 ));
 
-            parser.run(remaining).map(|expr| Expression::Parenthesized(Box::new(expr)))
+            parser.run(remaining).map(Expression::new_parenthesized)
         } else {
             ParseResult::NoMatch
         }
@@ -633,18 +777,18 @@ pub enum AssemblerDirective<'a> {
 impl Display for AssemblerDirective<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AssemblerDirective::Include(path) => write!(f, "#include \"{}\"", path),
-            AssemblerDirective::Address(addr) => write!(f, "#address 0x{:0>8X}", addr),
-            AssemblerDirective::Align(align) => write!(f, "#align {}", align),
-            AssemblerDirective::Int8(vals) => write!(f, "#d8 {}", display_expr_list(vals)?),
-            AssemblerDirective::Int16(vals) => write!(f, "#d16 {}", display_expr_list(vals)?),
-            AssemblerDirective::Int32(vals) => write!(f, "#d32 {}", display_expr_list(vals)?),
-            AssemblerDirective::Int64(vals) => write!(f, "#d64 {}", display_expr_list(vals)?),
-            AssemblerDirective::Ascii(s) => write!(f, "#ascii \"{}\"", s),
-            AssemblerDirective::AsciiZ(s) => write!(f, "#asciiz \"{}\"", s),
-            AssemblerDirective::Utf8(s) => write!(f, "#utf8 \"{}\"", s),
-            AssemblerDirective::Utf16(s) => write!(f, "#utf16 \"{}\"", s),
-            AssemblerDirective::Unicode(s) => write!(f, "#unicode \"{}\"", s),
+            Self::Include(path) => write!(f, "#include \"{}\"", path),
+            Self::Address(addr) => write!(f, "#address 0x{:0>8X}", addr),
+            Self::Align(align) => write!(f, "#align {}", align),
+            Self::Int8(vals) => write!(f, "#d8 {}", display_expr_list(vals)?),
+            Self::Int16(vals) => write!(f, "#d16 {}", display_expr_list(vals)?),
+            Self::Int32(vals) => write!(f, "#d32 {}", display_expr_list(vals)?),
+            Self::Int64(vals) => write!(f, "#d64 {}", display_expr_list(vals)?),
+            Self::Ascii(s) => write!(f, "#ascii \"{}\"", s),
+            Self::AsciiZ(s) => write!(f, "#asciiz \"{}\"", s),
+            Self::Utf8(s) => write!(f, "#utf8 \"{}\"", s),
+            Self::Utf16(s) => write!(f, "#utf16 \"{}\"", s),
+            Self::Unicode(s) => write!(f, "#unicode \"{}\"", s),
         }
     }
 }
@@ -819,62 +963,62 @@ pub enum Instruction<'a> {
 impl Display for Instruction<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Instruction::Nop => write!(f, "nop"),
-            Instruction::Brk => write!(f, "brk"),
-            Instruction::Hlt => write!(f, "hlt"),
-            Instruction::Err => write!(f, "err"),
-            Instruction::Add { d, l, r } => write!(f, "add {}, {}, {}", d, l, r),
-            Instruction::AddC { d, l, r } => write!(f, "addc {}, {}, {}", d, l, r),
-            Instruction::Sub { d, l, r } => write!(f, "sub {}, {}, {}", d, l, r),
-            Instruction::SubB { d, l, r } => write!(f, "subb {}, {}, {}", d, l, r),
-            Instruction::And { d, l, r } => write!(f, "and {}, {}, {}", d, l, r),
-            Instruction::Or { d, l, r } => write!(f, "or {}, {}, {}", d, l, r),
-            Instruction::Xor { d, l, r } => write!(f, "xor {}, {}, {}", d, l, r),
-            Instruction::Shl { d, l, r } => write!(f, "shl {}, {}, {}", d, l, r),
-            Instruction::Lsr { d, l, r } => write!(f, "lsr {}, {}, {}", d, l, r),
-            Instruction::Asr { d, l, r } => write!(f, "asr {}, {}, {}", d, l, r),
-            Instruction::Mul { d, l, r } => write!(f, "mul {}, {}, {}", d, l, r),
-            Instruction::MulHuu { d, l, r } => write!(f, "mulhuu {}, {}, {}", d, l, r),
-            Instruction::MulHss { d, l, r } => write!(f, "mulhss {}, {}, {}", d, l, r),
-            Instruction::MulHsu { d, l, r } => write!(f, "mulhsu {}, {}, {}", d, l, r),
-            Instruction::CSub { d, l, r } => write!(f, "csub {}, {}, {}", d, l, r),
-            Instruction::Slc { d, s } => write!(f, "slc {}, {}", d, s),
-            Instruction::Ld { d, s, o } => write!(f, "ld {}, [{}, {}]", d, s, o),
-            Instruction::Ld8 { d, s, o } => write!(f, "ld8 {}, [{}, {}]", d, s, o),
-            Instruction::Ld8s { d, s, o } => write!(f, "ld8s {}, [{}, {}]", d, s, o),
-            Instruction::Ld16 { d, s, o } => write!(f, "ld16 {}, [{}, {}]", d, s, o),
-            Instruction::Ld16s { d, s, o } => write!(f, "ld16s {}, [{}, {}]", d, s, o),
-            Instruction::In { d, s, o } => write!(f, "in {}, [{}, {}]", d, s, o),
-            Instruction::St { d, o, s } => write!(f, "st [{}, {}], {}", d, o, s),
-            Instruction::St8 { d, o, s } => write!(f, "st8 [{}, {}], {}", d, o, s),
-            Instruction::St16 { d, o, s } => write!(f, "st16 [{}, {}], {}", d, o, s),
-            Instruction::Out { d, o, s } => write!(f, "out [{}, {}], {}", d, o, s),
-            Instruction::Jmp { s, o, indirect } => {
+            Self::Nop => write!(f, "nop"),
+            Self::Brk => write!(f, "brk"),
+            Self::Hlt => write!(f, "hlt"),
+            Self::Err => write!(f, "err"),
+            Self::Add { d, l, r } => write!(f, "add {}, {}, {}", d, l, r),
+            Self::AddC { d, l, r } => write!(f, "addc {}, {}, {}", d, l, r),
+            Self::Sub { d, l, r } => write!(f, "sub {}, {}, {}", d, l, r),
+            Self::SubB { d, l, r } => write!(f, "subb {}, {}, {}", d, l, r),
+            Self::And { d, l, r } => write!(f, "and {}, {}, {}", d, l, r),
+            Self::Or { d, l, r } => write!(f, "or {}, {}, {}", d, l, r),
+            Self::Xor { d, l, r } => write!(f, "xor {}, {}, {}", d, l, r),
+            Self::Shl { d, l, r } => write!(f, "shl {}, {}, {}", d, l, r),
+            Self::Lsr { d, l, r } => write!(f, "lsr {}, {}, {}", d, l, r),
+            Self::Asr { d, l, r } => write!(f, "asr {}, {}, {}", d, l, r),
+            Self::Mul { d, l, r } => write!(f, "mul {}, {}, {}", d, l, r),
+            Self::MulHuu { d, l, r } => write!(f, "mulhuu {}, {}, {}", d, l, r),
+            Self::MulHss { d, l, r } => write!(f, "mulhss {}, {}, {}", d, l, r),
+            Self::MulHsu { d, l, r } => write!(f, "mulhsu {}, {}, {}", d, l, r),
+            Self::CSub { d, l, r } => write!(f, "csub {}, {}, {}", d, l, r),
+            Self::Slc { d, s } => write!(f, "slc {}, {}", d, s),
+            Self::Ld { d, s, o } => write!(f, "ld {}, [{}, {}]", d, s, o),
+            Self::Ld8 { d, s, o } => write!(f, "ld8 {}, [{}, {}]", d, s, o),
+            Self::Ld8s { d, s, o } => write!(f, "ld8s {}, [{}, {}]", d, s, o),
+            Self::Ld16 { d, s, o } => write!(f, "ld16 {}, [{}, {}]", d, s, o),
+            Self::Ld16s { d, s, o } => write!(f, "ld16s {}, [{}, {}]", d, s, o),
+            Self::In { d, s, o } => write!(f, "in {}, [{}, {}]", d, s, o),
+            Self::St { d, o, s } => write!(f, "st [{}, {}], {}", d, o, s),
+            Self::St8 { d, o, s } => write!(f, "st8 [{}, {}], {}", d, o, s),
+            Self::St16 { d, o, s } => write!(f, "st16 [{}, {}], {}", d, o, s),
+            Self::Out { d, o, s } => write!(f, "out [{}, {}], {}", d, o, s),
+            Self::Jmp { s, o, indirect } => {
                 if *indirect {
                     write!(f, "jmp [{}, {}]", s, o)
                 } else {
                     write!(f, "jmp {}, {}", s, o)
                 }
             }
-            Instruction::BrC { d } => write!(f, "br.c {}", d),
-            Instruction::BrZ { d } => write!(f, "br.z {}", d),
-            Instruction::BrS { d } => write!(f, "br.s {}", d),
-            Instruction::BrO { d } => write!(f, "br.o {}", d),
-            Instruction::BrNc { d } => write!(f, "br.nc {}", d),
-            Instruction::BrNz { d } => write!(f, "br.nz {}", d),
-            Instruction::BrNs { d } => write!(f, "br.ns {}", d),
-            Instruction::BrNo { d } => write!(f, "br.no {}", d),
-            Instruction::BrULe { d } => write!(f, "br.u.le {}", d),
-            Instruction::BrUG { d } => write!(f, "br.u.g {}", d),
-            Instruction::BrSL { d } => write!(f, "br.s.l {}", d),
-            Instruction::BrSGe { d } => write!(f, "br.s.ge {}", d),
-            Instruction::BrSLe { d } => write!(f, "br.s.le {}", d),
-            Instruction::BrSG { d } => write!(f, "br.s.g {}", d),
-            Instruction::Bra { d } => write!(f, "bra {}", d),
-            Instruction::LdUi { d, ui } => write!(f, "ldui {}, {}", d, ui),
-            Instruction::AddPcUi { d, ui } => write!(f, "addpcui {}, {}", d, ui),
-            Instruction::Sys => write!(f, "sys"),
-            Instruction::ClrK => write!(f, "clrk"),
+            Self::BrC { d } => write!(f, "br.c {}", d),
+            Self::BrZ { d } => write!(f, "br.z {}", d),
+            Self::BrS { d } => write!(f, "br.s {}", d),
+            Self::BrO { d } => write!(f, "br.o {}", d),
+            Self::BrNc { d } => write!(f, "br.nc {}", d),
+            Self::BrNz { d } => write!(f, "br.nz {}", d),
+            Self::BrNs { d } => write!(f, "br.ns {}", d),
+            Self::BrNo { d } => write!(f, "br.no {}", d),
+            Self::BrULe { d } => write!(f, "br.u.le {}", d),
+            Self::BrUG { d } => write!(f, "br.u.g {}", d),
+            Self::BrSL { d } => write!(f, "br.s.l {}", d),
+            Self::BrSGe { d } => write!(f, "br.s.ge {}", d),
+            Self::BrSLe { d } => write!(f, "br.s.le {}", d),
+            Self::BrSG { d } => write!(f, "br.s.g {}", d),
+            Self::Bra { d } => write!(f, "bra {}", d),
+            Self::LdUi { d, ui } => write!(f, "ldui {}, {}", d, ui),
+            Self::AddPcUi { d, ui } => write!(f, "addpcui {}, {}", d, ui),
+            Self::Sys => write!(f, "sys"),
+            Self::ClrK => write!(f, "clrk"),
         }
     }
 }
@@ -1036,7 +1180,7 @@ fn inc<'a>() -> TokenParser<'a, Instruction<'a>> {
     .map(|d| Instruction::Add {
         d,
         l: d,
-        r: AluRhs::Immediate(Expression::IntegerConstant(1)),
+        r: AluRhs::Immediate(Expression::new_dummy_constant(1)),
     })
 }
 
@@ -1050,7 +1194,7 @@ fn incc<'a>() -> TokenParser<'a, Instruction<'a>> {
     .map(|d| Instruction::AddC {
         d,
         l: d,
-        r: AluRhs::Immediate(Expression::IntegerConstant(0)),
+        r: AluRhs::Immediate(Expression::new_dummy_constant(0)),
     })
 }
 
@@ -1064,7 +1208,7 @@ fn dec<'a>() -> TokenParser<'a, Instruction<'a>> {
     .map(|d| Instruction::Sub {
         d,
         l: d,
-        r: AluRhs::Immediate(Expression::IntegerConstant(1)),
+        r: AluRhs::Immediate(Expression::new_dummy_constant(1)),
     })
 }
 
@@ -1078,7 +1222,7 @@ fn decb<'a>() -> TokenParser<'a, Instruction<'a>> {
     .map(|d| Instruction::SubB {
         d,
         l: d,
-        r: AluRhs::Immediate(Expression::IntegerConstant(0)),
+        r: AluRhs::Immediate(Expression::new_dummy_constant(0)),
     })
 }
 
@@ -1120,7 +1264,7 @@ fn not<'a>() -> TokenParser<'a, Instruction<'a>> {
     .map(|(d, s)| Instruction::Xor {
         d,
         l: s,
-        r: AluRhs::Immediate(Expression::IntegerConstant(-1)),
+        r: AluRhs::Immediate(Expression::new_dummy_constant(-1)),
     })
 }
 
@@ -1128,7 +1272,7 @@ fn offset_arg<'a>() -> TokenParser<'a, (Register, Expression<'a>)> {
     (register()
         & (comma_sep() >> expr())
             .opt()
-            .map(|o| o.unwrap_or(Expression::IntegerConstant(0))))
+            .map(|o| o.unwrap_or(Expression::new_dummy_constant(0))))
         | expr().map(|o| (Register(u5!(0)), o))
 }
 
