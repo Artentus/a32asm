@@ -1,6 +1,5 @@
 use crate::lexer::*;
 use crate::{Message, MessageKind, Register, SharedString};
-use rparse::*;
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::rc::Rc;
@@ -22,11 +21,6 @@ impl<'a> TokenInput<'a> {
     #[inline]
     fn peek(&self) -> Option<&'a Token> {
         self.tokens.get(self.position)
-    }
-
-    #[inline]
-    fn peek_kind(&self) -> Option<&'a TokenKind> {
-        self.tokens.get(self.position).map(|token| token.kind())
     }
 
     #[inline]
@@ -181,240 +175,637 @@ macro_rules! error {
     };
 }
 
-type TokenParser<'a, T> = Parser<'a, T, ParseError, TokenInput<'a>>;
-
-fn whitespace<'a>() -> TokenParser<'a, ()> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Whitespace) = input.peek_kind() {
-            ParseResult::Match(input.advance(), ())
-        } else {
-            ParseResult::NoMatch
+#[must_use]
+enum ParseResult<'a, T> {
+    /// The input matched the parser pattern.
+    Match {
+        remaining: TokenInput<'a>,
+        span: Option<TextSpan>,
+        value: T,
+    },
+    /// The input did not match the parser pattern.
+    NoMatch,
+    /// The input matched the parser pattern but was malformed or invalid.
+    Err(ParseError),
+}
+impl<'a, T> ParseResult<'a, T> {
+    pub fn map<R>(self, f: impl FnOnce(T) -> R) -> ParseResult<'a, R> {
+        match self {
+            Self::Match {
+                remaining,
+                span,
+                value,
+            } => ParseResult::Match {
+                remaining,
+                span,
+                value: f(value),
+            },
+            Self::NoMatch => ParseResult::NoMatch,
+            Self::Err(err) => ParseResult::Err(err),
         }
-    })
+    }
 }
 
-fn comment<'a>() -> TokenParser<'a, ()> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Comment { .. }) = input.peek_kind() {
-            ParseResult::Match(input.advance(), ())
-        } else {
-            ParseResult::NoMatch
-        }
-    })
+trait Parser<'a, T>: Fn(TokenInput<'a>) -> ParseResult<'a, T> + Clone {}
+impl<'a, T, F> Parser<'a, T> for F where F: Fn(TokenInput<'a>) -> ParseResult<'a, T> + Clone {}
+
+fn combine_spans(first: Option<TextSpan>, second: Option<TextSpan>) -> Option<TextSpan> {
+    match (first, second) {
+        (None, None) => None,
+        (None, Some(second)) => Some(second),
+        (Some(first), None) => Some(first),
+        (Some(first), Some(second)) => Some(first.combine(&second)),
+    }
 }
 
-fn operator<'a>(op: Operator) -> TokenParser<'a, ()> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Operator(found_op)) = input.peek_kind() {
-            if *found_op == op {
-                ParseResult::Match(input.advance(), ())
+fn and_then<'a, T1, T2>(
+    first: impl Parser<'a, T1>,
+    second: impl Parser<'a, T2>,
+) -> impl Parser<'a, (T1, T2)> {
+    move |input: TokenInput<'a>| match first(input) {
+        ParseResult::Match {
+            remaining,
+            span: span1,
+            value: v1,
+        } => match second(remaining) {
+            ParseResult::Match {
+                remaining,
+                span: span2,
+                value: v2,
+            } => {
+                let span = combine_spans(span1, span2);
+                ParseResult::Match {
+                    remaining,
+                    span,
+                    value: (v1, v2),
+                }
+            }
+            ParseResult::NoMatch => ParseResult::NoMatch,
+            ParseResult::Err(err) => ParseResult::Err(err),
+        },
+        ParseResult::NoMatch => ParseResult::NoMatch,
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn or_else<'a, T>(first: impl Parser<'a, T>, second: impl Parser<'a, T>) -> impl Parser<'a, T> {
+    move |input: TokenInput<'a>| match first(input) {
+        ParseResult::Match {
+            remaining,
+            span,
+            value,
+        } => ParseResult::Match {
+            remaining,
+            span,
+            value,
+        },
+        ParseResult::NoMatch => match second(input) {
+            ParseResult::Match {
+                remaining,
+                span,
+                value,
+            } => ParseResult::Match {
+                remaining,
+                span,
+                value,
+            },
+            ParseResult::NoMatch => ParseResult::NoMatch,
+            ParseResult::Err(err) => ParseResult::Err(err),
+        },
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn prefixed<'a, T1, T2>(
+    first: impl Parser<'a, T1>,
+    second: impl Parser<'a, T2>,
+) -> impl Parser<'a, T2> {
+    move |input: TokenInput<'a>| match first(input) {
+        ParseResult::Match {
+            remaining,
+            span: span1,
+            ..
+        } => match second(remaining) {
+            ParseResult::Match {
+                remaining,
+                span: span2,
+                value: v2,
+            } => {
+                let span = combine_spans(span1, span2);
+                ParseResult::Match {
+                    remaining,
+                    span,
+                    value: v2,
+                }
+            }
+            ParseResult::NoMatch => ParseResult::NoMatch,
+            ParseResult::Err(err) => ParseResult::Err(err),
+        },
+        ParseResult::NoMatch => ParseResult::NoMatch,
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn suffixed<'a, T1, T2>(
+    first: impl Parser<'a, T1>,
+    second: impl Parser<'a, T2>,
+) -> impl Parser<'a, T1> {
+    move |input: TokenInput<'a>| match first(input) {
+        ParseResult::Match {
+            remaining,
+            span: span1,
+            value: v1,
+        } => match second(remaining) {
+            ParseResult::Match {
+                remaining,
+                span: span2,
+                ..
+            } => {
+                let span = combine_spans(span1, span2);
+                ParseResult::Match {
+                    remaining,
+                    span,
+                    value: v1,
+                }
+            }
+            ParseResult::NoMatch => ParseResult::NoMatch,
+            ParseResult::Err(err) => ParseResult::Err(err),
+        },
+        ParseResult::NoMatch => ParseResult::NoMatch,
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn require<'a, T>(
+    p: impl Parser<'a, T>,
+    gen_err: impl Fn(TokenInput<'a>) -> ParseError + Clone,
+) -> impl Parser<'a, T> {
+    move |input: TokenInput<'a>| match p(input.clone()) {
+        ParseResult::Match {
+            remaining,
+            span,
+            value,
+        } => ParseResult::Match {
+            remaining,
+            span,
+            value,
+        },
+        ParseResult::NoMatch => ParseResult::Err(gen_err(input)),
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn verify<'a, T>(p: impl Parser<'a, T>, verify: impl Fn(&T) -> bool + Clone) -> impl Parser<'a, T> {
+    move |input: TokenInput<'a>| match p(input.clone()) {
+        ParseResult::Match {
+            remaining,
+            span,
+            value,
+        } => {
+            if verify(&value) {
+                ParseResult::Match {
+                    remaining,
+                    span,
+                    value,
+                }
             } else {
                 ParseResult::NoMatch
+            }
+        }
+        ParseResult::NoMatch => ParseResult::NoMatch,
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn or_return<'a, T: Clone>(p: impl Parser<'a, T>, default: T) -> impl Parser<'a, T> {
+    move |input: TokenInput<'a>| match p(input.clone()) {
+        ParseResult::Match {
+            remaining,
+            span,
+            value,
+        } => ParseResult::Match {
+            remaining,
+            span,
+            value,
+        },
+        ParseResult::NoMatch => ParseResult::Match {
+            remaining: input,
+            span: None,
+            value: default.clone(),
+        },
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn map<'a, T, M>(p: impl Parser<'a, T>, f: impl Fn(T) -> M + Clone) -> impl Parser<'a, M> {
+    move |input: TokenInput<'a>| p(input).map(&f)
+}
+
+fn map_to<'a, T, M: Clone>(p: impl Parser<'a, T>, v: M) -> impl Parser<'a, M> {
+    move |input: TokenInput<'a>| p(input).map(|_| v.clone())
+}
+
+fn map_span<'a, T, M>(
+    p: impl Parser<'a, T>,
+    f: impl Fn(T, Option<TextSpan>) -> M + Clone,
+) -> impl Parser<'a, M> {
+    move |input: TokenInput<'a>| match p(input) {
+        ParseResult::Match {
+            remaining,
+            span,
+            value,
+        } => ParseResult::Match {
+            remaining,
+            span: span.clone(),
+            value: f(value, span),
+        },
+        ParseResult::NoMatch => ParseResult::NoMatch,
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+fn many<'a, T>(p: impl Parser<'a, T>, allow_empty: bool) -> impl Parser<'a, Vec<T>> {
+    move |mut input: TokenInput<'a>| {
+        let mut result = Vec::new();
+        let mut full_span: Option<TextSpan> = None;
+
+        loop {
+            match p(input) {
+                ParseResult::Match {
+                    remaining,
+                    span,
+                    value,
+                } => {
+                    input = remaining;
+                    result.push(value);
+                    full_span = combine_spans(full_span, span);
+                }
+                ParseResult::NoMatch => break,
+                ParseResult::Err(err) => return ParseResult::Err(err),
+            }
+        }
+
+        if allow_empty || (result.len() > 0) {
+            ParseResult::Match {
+                remaining: input,
+                span: full_span,
+                value: result,
             }
         } else {
             ParseResult::NoMatch
         }
-    })
+    }
 }
 
-fn operator_span<'a>(op: Operator) -> TokenParser<'a, TextSpan> {
-    parser!(input: TokenInput<'a> => {
+fn sep_by<'a, T, S>(
+    p: impl Parser<'a, T>,
+    s: impl Parser<'a, S>,
+    allow_empty: bool,
+    allow_trailing: bool,
+) -> impl Parser<'a, Vec<T>> {
+    move |input: TokenInput<'a>| match p(input.clone()) {
+        ParseResult::Match {
+            remaining: mut input,
+            span,
+            value,
+        } => {
+            let mut result = Vec::new();
+            result.push(value);
+
+            let mut full_span = span;
+
+            loop {
+                match s(input) {
+                    ParseResult::Match { remaining, .. } => match p(remaining) {
+                        ParseResult::Match {
+                            remaining,
+                            span,
+                            value,
+                        } => {
+                            input = remaining;
+                            result.push(value);
+                            full_span = combine_spans(full_span, span);
+                        }
+                        ParseResult::NoMatch => {
+                            if allow_trailing {
+                                break;
+                            } else {
+                                return ParseResult::NoMatch;
+                            }
+                        }
+                        ParseResult::Err(err) => return ParseResult::Err(err),
+                    },
+                    ParseResult::NoMatch => break,
+                    ParseResult::Err(err) => return ParseResult::Err(err),
+                }
+            }
+
+            ParseResult::Match {
+                remaining: input,
+                span: full_span,
+                value: result,
+            }
+        }
+        ParseResult::NoMatch => {
+            if allow_empty {
+                ParseResult::Match {
+                    remaining: input,
+                    span: None,
+                    value: Vec::new(),
+                }
+            } else {
+                ParseResult::NoMatch
+            }
+        }
+        ParseResult::Err(err) => ParseResult::Err(err),
+    }
+}
+
+macro_rules! parser {
+    ($p:expr) => {
+        $p
+    };
+    ($lhs:expr, &, $rhs:expr, $($rest:tt)*) => {
+        parser!(and_then($lhs, $rhs), $($rest)*)
+    };
+    ($lhs:expr, &, $rhs:expr) => {
+        and_then($lhs, $rhs)
+    };
+    ($lhs:expr, <<, $rhs:expr, $($rest:tt)*) => {
+        parser!(suffixed($lhs, $rhs), $($rest)*)
+    };
+    ($lhs:expr, <<, $rhs:expr) => {
+        suffixed($lhs, $rhs)
+    };
+    ($lhs:expr, >>, $rhs:expr, $($rest:tt)*) => {
+        parser!(prefixed($lhs, $rhs), $($rest)*)
+    };
+    ($lhs:expr, >>, $rhs:expr) => {
+        prefixed($lhs, $rhs)
+    };
+    ($lhs:expr, |, $($rest:tt)*) => {
+        or_else($lhs, parser!($($rest)*))
+    };
+    ($lhs:expr, |, $rhs:expr) => {
+        or_else($lhs, $rhs)
+    };
+    ($lhs:expr, ->, $rhs:expr, $($rest:tt)*) => {
+        parser!(map($lhs, $rhs), $($rest)*)
+    };
+    ($lhs:expr, ->, $rhs:expr) => {
+        map($lhs, $rhs)
+    };
+    ($lhs:expr, =>, $rhs:expr, $($rest:tt)*) => {
+        parser!(map_to($lhs, $rhs), $($rest)*)
+    };
+    ($lhs:expr, =>, $rhs:expr) => {
+        map_to($lhs, $rhs)
+    };
+    ($lhs:expr, |->, $rhs:expr, $($rest:tt)*) => {
+        parser!(map_span($lhs, $rhs), $($rest)*)
+    };
+    ($lhs:expr, |->, $rhs:expr) => {
+        map_span($lhs, $rhs)
+    };
+}
+
+macro_rules! choice {
+    ($p:expr) => {
+       $p
+    };
+    ($head:expr, $($tail:expr),+) => {
+        or_else($head, choice!($($tail),+))
+    };
+}
+
+fn whitespace(input: TokenInput) -> ParseResult<()> {
+    if let Some(token) = input.peek() {
+        if token.kind() == &TokenKind::Whitespace {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: (),
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    } else {
+        ParseResult::NoMatch
+    }
+}
+
+fn comment(input: TokenInput) -> ParseResult<()> {
+    if let Some(token) = input.peek() {
+        if let TokenKind::Comment { .. } = token.kind() {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: (),
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    } else {
+        ParseResult::NoMatch
+    }
+}
+
+fn operator<'a>(op: Operator) -> impl Parser<'a, ()> {
+    move |input: TokenInput<'a>| {
         if let Some(token) = input.peek() {
             if token.kind() == &TokenKind::Operator(op) {
-                ParseResult::Match(input.advance(), token.span().clone())
+                ParseResult::Match {
+                    remaining: input.advance(),
+                    span: Some(token.span().clone()),
+                    value: (),
+                }
             } else {
                 ParseResult::NoMatch
             }
         } else {
             ParseResult::NoMatch
         }
-    })
+    }
 }
 
-fn integer_literal<'a>() -> TokenParser<'a, i64> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::IntegerLiteral(val)) = input.peek_kind() {
-            ParseResult::Match(input.advance(), *val)
+fn integer_literal(input: TokenInput) -> ParseResult<i64> {
+    if let Some(token) = input.peek() {
+        if let TokenKind::IntegerLiteral(val) = token.kind() {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: *val,
+            }
         } else {
             ParseResult::NoMatch
         }
-    })
+    } else {
+        ParseResult::NoMatch
+    }
 }
 
-fn integer_literal_span<'a>() -> TokenParser<'a, (i64, TextSpan)> {
-    parser!(input: TokenInput<'a> => {
+fn char_literal(input: TokenInput) -> ParseResult<char> {
+    if let Some(token) = input.peek() {
+        if let TokenKind::CharLiteral(c) = token.kind() {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: *c,
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    } else {
+        ParseResult::NoMatch
+    }
+}
+
+fn string_literal(input: TokenInput) -> ParseResult<SharedString> {
+    if let Some(token) = input.peek() {
+        if let TokenKind::StringLiteral(s) = token.kind() {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: Rc::clone(s),
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    } else {
+        ParseResult::NoMatch
+    }
+}
+
+fn directive<'a>(dir: Directive) -> impl Parser<'a, ()> {
+    move |input: TokenInput<'a>| {
         if let Some(token) = input.peek() {
-            if let TokenKind::IntegerLiteral(val) = token.kind() {
-                ParseResult::Match(input.advance(), (*val, token.span().clone()))
+            if token.kind() == &TokenKind::Directive(dir) {
+                ParseResult::Match {
+                    remaining: input.advance(),
+                    span: Some(token.span().clone()),
+                    value: (),
+                }
             } else {
                 ParseResult::NoMatch
             }
         } else {
             ParseResult::NoMatch
         }
-    })
+    }
 }
 
-//fn char_literal<'a>() -> TokenParser<'a, char> {
-//    parser!(input: TokenInput<'a> => {
-//        if let Some(TokenKind::CharLiteral(c)) = input.peek_kind() {
-//            ParseResult::Match(input.advance(), *c)
-//        } else {
-//            ParseResult::NoMatch
-//        }
-//    })
-//}
+fn register(input: TokenInput) -> ParseResult<Register> {
+    if let Some(token) = input.peek() {
+        if let TokenKind::Register(reg) = token.kind() {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: *reg,
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    } else {
+        ParseResult::NoMatch
+    }
+}
 
-fn char_literal_span<'a>() -> TokenParser<'a, (char, TextSpan)> {
-    parser!(input: TokenInput<'a> => {
+fn keyword<'a>(kw: Keyword) -> impl Parser<'a, ()> {
+    move |input: TokenInput<'a>| {
         if let Some(token) = input.peek() {
-            if let TokenKind::CharLiteral(c) = token.kind() {
-                ParseResult::Match(input.advance(), (*c, token.span().clone()))
+            if token.kind() == &TokenKind::Keyword(kw) {
+                ParseResult::Match {
+                    remaining: input.advance(),
+                    span: Some(token.span().clone()),
+                    value: (),
+                }
             } else {
                 ParseResult::NoMatch
             }
         } else {
             ParseResult::NoMatch
         }
-    })
+    }
 }
 
-fn string_literal<'a>() -> TokenParser<'a, SharedString> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::StringLiteral(s)) = input.peek_kind() {
-            ParseResult::Match(input.advance(), Rc::clone(s))
-        } else {
-            ParseResult::NoMatch
-        }
-    })
-}
-
-fn directive<'a>(dir: Directive) -> TokenParser<'a, ()> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Directive(found_dir)) = input.peek_kind() {
-            if *found_dir == dir {
-                ParseResult::Match(input.advance(), ())
-            } else {
-                ParseResult::NoMatch
+fn identifier(input: TokenInput) -> ParseResult<SharedString> {
+    if let Some(token) = input.peek() {
+        if let TokenKind::Identifier(ident) = token.kind() {
+            ParseResult::Match {
+                remaining: input.advance(),
+                span: Some(token.span().clone()),
+                value: Rc::clone(ident),
             }
         } else {
             ParseResult::NoMatch
         }
-    })
+    } else {
+        ParseResult::NoMatch
+    }
 }
 
-fn register<'a>() -> TokenParser<'a, Register> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Register(reg)) = input.peek_kind() {
-            ParseResult::Match(input.advance(), *reg)
-        } else {
-            ParseResult::NoMatch
+fn eof(input: TokenInput) -> ParseResult<()> {
+    if let Some(_) = input.peek() {
+        ParseResult::NoMatch
+    } else {
+        ParseResult::Match {
+            remaining: input,
+            span: None,
+            value: (),
         }
-    })
+    }
 }
 
-fn keyword<'a>(kw: Keyword) -> TokenParser<'a, ()> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Keyword(found_kw)) = input.peek_kind() {
-            if *found_kw == kw {
-                ParseResult::Match(input.advance(), ())
-            } else {
-                ParseResult::NoMatch
-            }
-        } else {
-            ParseResult::NoMatch
-        }
-    })
+fn whitespace0(input: TokenInput) -> ParseResult<()> {
+    let inner = parser!(whitespace, |, comment);
+    parser!(many(inner, true), =>, ())(input)
 }
 
-fn identifier<'a>() -> TokenParser<'a, SharedString> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Identifier(ident)) = input.peek_kind() {
-            ParseResult::Match(input.advance(), Rc::clone(ident))
-        } else {
-            ParseResult::NoMatch
-        }
-    })
+fn whitespace1(input: TokenInput) -> ParseResult<()> {
+    let inner = parser!(whitespace, |, comment);
+    parser!(many(inner, false), =>, ())(input)
 }
 
-fn identifier_span<'a>() -> TokenParser<'a, (SharedString, TextSpan)> {
-    parser!(input: TokenInput<'a> => {
+fn in_brackets<'a, T>(p: impl Parser<'a, T>) -> impl Parser<'a, T> {
+    move |input: TokenInput<'a>| {
         if let Some(token) = input.peek() {
-            if let TokenKind::Identifier(ident) = token.kind() {
-                ParseResult::Match(input.advance(), (Rc::clone(ident), token.span().clone()))
+            if token.kind() == &TokenKind::Operator(Operator::OpenBracket) {
+                let hint_span = input.error_span(false);
+                let remaining = input.advance();
+
+                let closing = require(operator(Operator::CloseBracket), |input| {
+                    ParseError::new_with_hint(
+                        input.error_span(false),
+                        "missing closing bracket",
+                        hint_span.clone(),
+                        "matching open bracket here",
+                    )
+                });
+
+                let full_parser = parser!(whitespace0, >>, p.clone(), <<, whitespace0, <<, closing);
+                full_parser(remaining)
             } else {
                 ParseResult::NoMatch
             }
         } else {
             ParseResult::NoMatch
         }
-    })
+    }
 }
 
-fn eof<'a>() -> TokenParser<'a, ()> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(_) = input.peek() {
-            ParseResult::NoMatch
-        } else {
-            ParseResult::Match(input, ())
-        }
-    })
+fn label_ident(input: TokenInput) -> ParseResult<SharedString> {
+    identifier(input)
 }
 
-fn whitespace0<'a>() -> TokenParser<'a, ()> {
-    (whitespace() | comment()).many().map_to(())
+fn const_ident(input: TokenInput) -> ParseResult<SharedString> {
+    parser!(operator(Operator::Define), >>, require(identifier, error!(
+        "expected identifier",
+        "`$` indicates a constant identifier"
+    )))(input)
 }
 
-fn whitespace1<'a>() -> TokenParser<'a, ()> {
-    (whitespace() | comment()).many1().map_to(())
-}
-
-fn in_brackets<'a, T: 'a>(parser: TokenParser<'a, T>) -> TokenParser<'a, T> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Operator(Operator::OpenBracket)) = input.peek_kind() {
-            let hint_span = input.error_span(false);
-            let remaining = input.advance();
-
-            let full_parser = whitespace0()
-                >> parser.clone()
-                << whitespace0()
-                << operator(Operator::CloseBracket).require(|input| ParseError::new_with_hint(
-                    input.error_span(false),
-                    "missing closing bracket",
-                    hint_span.clone(),
-                    "matching open bracket here",
-                ));
-
-            full_parser.run(remaining)
-        } else {
-            ParseResult::NoMatch
-        }
-    })
-}
-
-fn label_ident<'a>() -> TokenParser<'a, (SharedString, TextSpan)> {
-    identifier_span()
-}
-
-fn const_ident<'a>() -> TokenParser<'a, SharedString> {
-    operator(Operator::Define)
-        >> identifier().require(error!(
-            "expected identifier",
-            "`$` indices a constant identifier"
-        ))
-}
-
-fn const_ident_span<'a>() -> TokenParser<'a, (SharedString, TextSpan)> {
-    (operator_span(Operator::Define)
-        & identifier_span().require(error!(
-            "expected identifier",
-            "`$` indices a constant identifier"
-        )))
-    .map(|(s1, (ident, s2))| (ident, s1.combine(&s2)))
-}
-
-fn comma_sep<'a>() -> TokenParser<'a, ()> {
-    whitespace0() >> operator(Operator::Comma) << whitespace0()
+fn comma_sep(input: TokenInput) -> ParseResult<()> {
+    parser!(whitespace0, >>, operator(Operator::Comma), <<, whitespace0)(input)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,39 +908,38 @@ impl Expression {
         }
     }
 
-    fn new_integer(output: (i64, TextSpan)) -> Self {
+    fn new_integer(val: i64, span: Option<TextSpan>) -> Self {
         Self {
-            kind: ExpressionKind::IntegerConstant(output.0),
-            span: Some(output.1),
+            kind: ExpressionKind::IntegerConstant(val),
+            span,
         }
     }
 
-    fn new_char(output: (char, TextSpan)) -> Self {
+    fn new_char(c: char, span: Option<TextSpan>) -> Self {
         Self {
-            kind: ExpressionKind::CharConstant(output.0),
-            span: Some(output.1),
+            kind: ExpressionKind::CharConstant(c),
+            span,
         }
     }
 
-    fn new_label(output: (SharedString, TextSpan)) -> Self {
+    fn new_label(name: SharedString, span: Option<TextSpan>) -> Self {
         Self {
-            kind: ExpressionKind::Label(output.0),
-            span: Some(output.1),
+            kind: ExpressionKind::Label(name),
+            span,
         }
     }
 
-    fn new_define(output: (SharedString, TextSpan)) -> Self {
+    fn new_define(name: SharedString, span: Option<TextSpan>) -> Self {
         Self {
-            kind: ExpressionKind::Define(output.0),
-            span: Some(output.1),
+            kind: ExpressionKind::Define(name),
+            span,
         }
     }
 
-    fn new_unary(output: ((UnaryOperator, TextSpan), Expression)) -> Self {
-        let sub_span = output.1.span().unwrap().clone();
+    fn new_unary(output: (UnaryOperator, Expression), span: Option<TextSpan>) -> Self {
         Self {
-            kind: ExpressionKind::UnaryOperator(output.0 .0, Box::new(output.1)),
-            span: Some(output.0 .1.combine(&sub_span)),
+            kind: ExpressionKind::UnaryOperator(output.0, Box::new(output.1)),
+            span,
         }
     }
 
@@ -577,24 +967,27 @@ impl Display for Expression {
     }
 }
 
-fn leaf_expr<'a>() -> TokenParser<'a, Expression> {
-    paren_expr()
-        | integer_literal_span().map(Expression::new_integer)
-        | char_literal_span().map(Expression::new_char)
-        | label_ident().map(Expression::new_label)
-        | const_ident_span().map(Expression::new_define)
+fn leaf_expr(input: TokenInput) -> ParseResult<Expression> {
+    choice!(
+        paren_expr,
+        parser!(integer_literal, |->, Expression::new_integer),
+        parser!(char_literal, |->, Expression::new_char),
+        parser!(label_ident, |->, Expression::new_label),
+        parser!(const_ident, |->, Expression::new_define)
+    )(input)
 }
 
-fn unary_op<'a>() -> TokenParser<'a, (UnaryOperator, TextSpan)> {
-    operator_span(Operator::Plus).map(|span| (UnaryOperator::Positive, span))
-        | operator_span(Operator::Minus).map(|span| (UnaryOperator::Negative, span))
-        | operator_span(Operator::Not).map(|span| (UnaryOperator::Not, span))
+fn unary_op(input: TokenInput) -> ParseResult<UnaryOperator> {
+    choice!(
+        parser!(operator(Operator::Plus), =>, UnaryOperator::Positive),
+        parser!(operator(Operator::Minus), =>, UnaryOperator::Negative),
+        parser!(operator(Operator::Not), =>, UnaryOperator::Not)
+    )(input)
 }
 
-fn unary_expr<'a>() -> TokenParser<'a, Expression> {
-    leaf_expr()
-        | (unary_op() << whitespace0() & leaf_expr().require(error!("expected expression")))
-            .map(Expression::new_unary)
+fn unary_expr(input: TokenInput) -> ParseResult<Expression> {
+    let unary = parser!(parser!(unary_op, <<, whitespace0, &, require(leaf_expr, error!("expected expression"))), |->, Expression::new_unary);
+    choice!(leaf_expr, unary)(input)
 }
 
 fn aggregate_exprs<'a>(output: (Expression, Vec<(BinaryOperator, Expression)>)) -> Expression {
@@ -610,138 +1003,127 @@ fn aggregate_exprs<'a>(output: (Expression, Vec<(BinaryOperator, Expression)>)) 
     expr
 }
 
-fn mul_div_op<'a>() -> TokenParser<'a, BinaryOperator> {
-    operator(Operator::Times).map_to(BinaryOperator::Multiply)
-        | operator(Operator::Divide).map_to(BinaryOperator::Divide)
-        | operator(Operator::Remainder).map_to(BinaryOperator::Remainder)
+fn mul_div_op(input: TokenInput) -> ParseResult<BinaryOperator> {
+    choice!(
+        parser!(operator(Operator::Times), =>, BinaryOperator::Multiply),
+        parser!(operator(Operator::Divide), =>, BinaryOperator::Divide),
+        parser!(operator(Operator::Remainder), =>, BinaryOperator::Remainder)
+    )(input)
 }
 
-fn mul_div_expr<'a>() -> TokenParser<'a, Expression> {
-    (unary_expr()
-        & (whitespace0() >> mul_div_op()
-            & whitespace0() >> unary_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn mul_div_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, mul_div_op, <<, whitespace0, &, require(unary_expr, error!("expected expression")));
+    map(parser!(unary_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn add_sub_op<'a>() -> TokenParser<'a, BinaryOperator> {
-    operator(Operator::Plus).map_to(BinaryOperator::Add)
-        | operator(Operator::Minus).map_to(BinaryOperator::Subtract)
+fn add_sub_op(input: TokenInput) -> ParseResult<BinaryOperator> {
+    choice!(
+        parser!(operator(Operator::Plus), =>, BinaryOperator::Add),
+        parser!(operator(Operator::Minus), =>, BinaryOperator::Subtract)
+    )(input)
 }
 
-fn add_sub_expr<'a>() -> TokenParser<'a, Expression> {
-    (mul_div_expr()
-        & (whitespace0() >> add_sub_op()
-            & whitespace0() >> mul_div_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn add_sub_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, add_sub_op, <<, whitespace0, &, require(mul_div_expr, error!("expected expression")));
+    map(parser!(mul_div_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn shift_op<'a>() -> TokenParser<'a, BinaryOperator> {
-    operator(Operator::ShiftLeft).map_to(BinaryOperator::ShiftLeft)
-        | operator(Operator::ShiftRight).map_to(BinaryOperator::ShiftRight)
-        | operator(Operator::ShiftRightArithmetic).map_to(BinaryOperator::ShiftRightArithmetic)
+fn shift_op(input: TokenInput) -> ParseResult<BinaryOperator> {
+    choice!(
+        parser!(operator(Operator::ShiftLeft), =>, BinaryOperator::ShiftLeft),
+        parser!(operator(Operator::ShiftRight), =>, BinaryOperator::ShiftRight),
+        parser!(operator(Operator::ShiftRightArithmetic), =>, BinaryOperator::ShiftRightArithmetic)
+    )(input)
 }
 
-fn shift_expr<'a>() -> TokenParser<'a, Expression> {
-    (add_sub_expr()
-        & (whitespace0() >> shift_op()
-            & whitespace0() >> add_sub_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn shift_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, shift_op, <<, whitespace0, &, require(add_sub_expr, error!("expected expression")));
+    map(parser!(add_sub_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn comp_op<'a>() -> TokenParser<'a, BinaryOperator> {
-    operator(Operator::LessThan).map_to(BinaryOperator::Less)
-        | operator(Operator::LessThanEquals).map_to(BinaryOperator::LessEqual)
-        | operator(Operator::GreaterThan).map_to(BinaryOperator::Greater)
-        | operator(Operator::GreaterThanEquals).map_to(BinaryOperator::GreaterEqual)
+fn comp_op(input: TokenInput) -> ParseResult<BinaryOperator> {
+    choice!(
+        parser!(operator(Operator::LessThan), =>, BinaryOperator::Less),
+        parser!(operator(Operator::LessThanEquals), =>, BinaryOperator::LessEqual),
+        parser!(operator(Operator::GreaterThan), =>, BinaryOperator::Greater),
+        parser!(operator(Operator::GreaterThanEquals), =>, BinaryOperator::GreaterEqual)
+    )(input)
 }
 
-fn comp_expr<'a>() -> TokenParser<'a, Expression> {
-    (shift_expr()
-        & (whitespace0() >> comp_op()
-            & whitespace0() >> shift_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn comp_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, comp_op, <<, whitespace0, &, require(shift_expr, error!("expected expression")));
+    map(parser!(shift_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn eq_op<'a>() -> TokenParser<'a, BinaryOperator> {
-    operator(Operator::Equals).map_to(BinaryOperator::Equals)
-        | operator(Operator::NotEquals).map_to(BinaryOperator::NotEquals)
+fn eq_op(input: TokenInput) -> ParseResult<BinaryOperator> {
+    choice!(
+        parser!(operator(Operator::Equals), =>, BinaryOperator::Equals),
+        parser!(operator(Operator::NotEquals), =>, BinaryOperator::NotEquals)
+    )(input)
 }
 
-fn eq_expr<'a>() -> TokenParser<'a, Expression> {
-    (comp_expr()
-        & (whitespace0() >> eq_op()
-            & whitespace0() >> comp_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn eq_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, eq_op, <<, whitespace0, &, require(comp_expr, error!("expected expression")));
+    map(parser!(comp_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn and_expr<'a>() -> TokenParser<'a, Expression> {
-    (eq_expr()
-        & (whitespace0() >> operator(Operator::And).map_to(BinaryOperator::And)
-            & whitespace0() >> eq_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn and_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, map_to(operator(Operator::And), BinaryOperator::And), <<, whitespace0, &, require(eq_expr, error!("expected expression")));
+    map(parser!(eq_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn xor_expr<'a>() -> TokenParser<'a, Expression> {
-    (and_expr()
-        & (whitespace0() >> operator(Operator::Xor).map_to(BinaryOperator::Xor)
-            & whitespace0() >> and_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn xor_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, map_to(operator(Operator::Xor), BinaryOperator::Xor), <<, whitespace0, &, require(and_expr, error!("expected expression")));
+    map(parser!(and_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn or_expr<'a>() -> TokenParser<'a, Expression> {
-    (xor_expr()
-        & (whitespace0() >> operator(Operator::Or).map_to(BinaryOperator::Or)
-            & whitespace0() >> xor_expr().require(error!("expected expression")))
-        .many())
-    .map(aggregate_exprs)
+fn or_expr(input: TokenInput) -> ParseResult<Expression> {
+    let tail = parser!(whitespace0, >>, map_to(operator(Operator::Or), BinaryOperator::Or), <<, whitespace0, &, require(xor_expr, error!("expected expression")));
+    map(parser!(xor_expr, &, many(tail, true)), aggregate_exprs)(input)
 }
 
-fn paren_expr<'a>() -> TokenParser<'a, Expression> {
-    parser!(input: TokenInput<'a> => {
-        if let Some(TokenKind::Operator(Operator::OpenParen)) = input.peek_kind() {
+fn paren_expr(input: TokenInput) -> ParseResult<Expression> {
+    if let Some(token) = input.peek() {
+        if token.kind() == &TokenKind::Operator(Operator::OpenParen) {
             let hint_span = input.error_span(false);
             let remaining = input.advance();
 
-            let parser = whitespace0()
-                >> or_expr().require(error!("expected expression"))
-                << whitespace0()
-                << operator(Operator::CloseParen).require(|input| ParseError::new_with_hint(
+            let closing = require(operator(Operator::CloseParen), move |input| {
+                ParseError::new_with_hint(
                     input.error_span(false),
                     "missing closing parenthesis",
                     hint_span.clone(),
                     "matching open paranthesis here",
-                ));
+                )
+            });
 
-            parser.run(remaining).map(Expression::new_parenthesized)
+            let full_parser = parser!(whitespace0, >>, require(or_expr, error!("expected expression")), <<, whitespace0, <<, closing);
+            parser!(full_parser, ->, Expression::new_parenthesized)(remaining)
         } else {
             ParseResult::NoMatch
         }
-    })
+    } else {
+        ParseResult::NoMatch
+    }
 }
 
-fn expr<'a>() -> TokenParser<'a, Expression> {
-    or_expr()
+fn expr(input: TokenInput) -> ParseResult<Expression> {
+    or_expr(input)
 }
 
-fn label_def<'a>() -> TokenParser<'a, SharedString> {
-    identifier()
-        << (whitespace0() & operator(Operator::Colon))
-            .require(error!("expected `:`", "label declarations require a colon"))
+fn label_def(input: TokenInput) -> ParseResult<SharedString> {
+    let colon = require(
+        parser!(whitespace0, &, operator(Operator::Colon)),
+        error!("expected `:`", "label declarations require a colon"),
+    );
+    parser!(identifier ,<<, colon)(input)
 }
 
-fn const_def<'a>() -> TokenParser<'a, (SharedString, Expression)> {
-    const_ident()
-        & (whitespace0()
-            >> operator(Operator::Assign).require(error!("expected assignment"))
-            >> whitespace0()
-            >> expr().require(error!("expected expression")))
+fn const_def(input: TokenInput) -> ParseResult<(SharedString, Expression)> {
+    let assign = parser!(whitespace0, >>, require(operator(Operator::Assign), error!("expected assignment")));
+    parser!(const_ident, <<, assign, <<, whitespace0, &, require(expr, error!("expected expression")))(
+        input,
+    )
 }
 
 fn display_expr_list(list: &[Expression]) -> std::result::Result<SharedString, std::fmt::Error> {
@@ -792,50 +1174,52 @@ impl Display for AssemblerDirective {
     }
 }
 
-fn inc_dir<'a>() -> TokenParser<'a, AssemblerDirective> {
-    (directive(Directive::Include)
-        >> whitespace1().require(error!(
+fn inc_dir(input: TokenInput) -> ParseResult<AssemblerDirective> {
+    map(
+        parser!(directive(Directive::Include), >>, require(whitespace1, error!(
             "expected whitespace",
             "whitespace is required between the directive and the file path"
-        ))
-        >> string_literal().require(error!("expected file path")))
-    .map(|s| AssemblerDirective::Include(s))
+        )), >>, require(string_literal, error!("expected file path"))),
+        |s| AssemblerDirective::Include(s),
+    )(input)
 }
 
-fn addr_dir<'a>() -> TokenParser<'a, AssemblerDirective> {
-    let addr_literal = integer_literal().verify(|addr| *addr <= (u32::MAX as i64));
-    (directive(Directive::Address)
-        >> whitespace1().require(error!(
+fn addr_dir(input: TokenInput) -> ParseResult<AssemblerDirective> {
+    let addr_literal = verify(integer_literal, |addr| {
+        (*addr <= (u32::MAX as i64)) && (*addr >= 0)
+    });
+
+    map(
+        parser!(directive(Directive::Address), >>, require(whitespace1, error!(
             "expected whitespace",
             "whitespace is required between the directive and the address"
-        ))
-        >> addr_literal.require(error!("expected address")))
-    .map(|addr| AssemblerDirective::Address(addr as u32))
+        )), >>, require(addr_literal, error!("expected address"))),
+        |addr| AssemblerDirective::Address(addr as u32),
+    )(input)
 }
 
-fn align_dir<'a>() -> TokenParser<'a, AssemblerDirective> {
-    let align_literal = integer_literal().verify(|align| *align <= (u32::MAX as i64));
-    (directive(Directive::Align)
-        >> whitespace1().require(error!(
+fn align_dir(input: TokenInput) -> ParseResult<AssemblerDirective> {
+    let align_literal = verify(integer_literal, |align| {
+        (*align <= (u32::MAX as i64)) && (*align >= 1)
+    });
+
+    map(
+        parser!(directive(Directive::Align), >>, require(whitespace1, error!(
             "expected whitespace",
             "whitespace is required between the directive and the alignment"
-        ))
-        >> align_literal.require(error!("expected alignment")))
-    .map(|align| AssemblerDirective::Align(align as u32))
+        )), >>, require(align_literal, error!("expected alignment"))),
+        |align| AssemblerDirective::Align(align as u32),
+    )(input)
 }
 
 macro_rules! int_dir {
     ($name:ident, $dir:ident) => {
-        fn $name<'a>() -> TokenParser<'a, AssemblerDirective> {
-            (directive(Directive::$dir)
-                >> whitespace1().require(error!(
+        fn $name(input: TokenInput) -> ParseResult<AssemblerDirective> {
+            map(parser!(directive(Directive::$dir), >>, require(whitespace1, error!(
                     "expected whitespace",
                     "whitespace is required between the directive and the data"
-                ))
-                >> expr()
-                    .sep_by1(comma_sep(), true)
-                    .require(error!("expected data")))
-            .map(AssemblerDirective::$dir)
+                )), >>, require(sep_by(expr, comma_sep, false, true), error!("expected data")))
+            , AssemblerDirective::$dir)(input)
         }
     };
 }
@@ -847,14 +1231,12 @@ int_dir!(int64_dir, Int64);
 
 macro_rules! string_dir {
     ($name:ident, $dir:ident) => {
-        fn $name<'a>() -> TokenParser<'a, AssemblerDirective> {
-            (directive(Directive::$dir)
-                >> whitespace1().require(error!(
+        fn $name(input: TokenInput) -> ParseResult<AssemblerDirective> {
+            map(parser!(directive(Directive::$dir), >>, require(whitespace1, error!(
                     "expected whitespace",
                     "whitespace is required between the directive and the string"
-                ))
-                >> string_literal().require(error!("expected string")))
-            .map(AssemblerDirective::$dir)
+                )), >>, require(string_literal, error!("expected string")))
+            , AssemblerDirective::$dir)(input)
         }
     };
 }
@@ -865,19 +1247,21 @@ string_dir!(utf8_dir, Utf8);
 string_dir!(utf16_dir, Utf16);
 string_dir!(unicode_dir, Unicode);
 
-fn dir<'a>() -> TokenParser<'a, AssemblerDirective> {
-    inc_dir()
-        | addr_dir()
-        | align_dir()
-        | int8_dir()
-        | int16_dir()
-        | int32_dir()
-        | int64_dir()
-        | ascii_dir()
-        | asciiz_dir()
-        | utf8_dir()
-        | utf16_dir()
-        | unicode_dir()
+fn dir<'a>(input: TokenInput) -> ParseResult<AssemblerDirective> {
+    choice!(
+        inc_dir,
+        addr_dir,
+        align_dir,
+        int8_dir,
+        int16_dir,
+        int32_dir,
+        int64_dir,
+        ascii_dir,
+        asciiz_dir,
+        utf8_dir,
+        utf16_dir,
+        unicode_dir
+    )(input)
 }
 
 #[derive(Debug, Clone)]
@@ -894,8 +1278,8 @@ impl Display for AluRhs {
     }
 }
 
-fn alu_rhs<'a>() -> TokenParser<'a, AluRhs> {
-    register().map(AluRhs::Register) | expr().map(AluRhs::Immediate)
+fn alu_rhs(input: TokenInput) -> ParseResult<AluRhs> {
+    parser!(map(register, AluRhs::Register), |, map(expr, AluRhs::Immediate))(input)
 }
 
 #[rustfmt::skip]
@@ -1024,8 +1408,8 @@ impl Display for Instruction {
 
 macro_rules! misc_inst {
     ($name:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            keyword(Keyword::$inst).map_to(Instruction::$inst)
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            parser!(keyword(Keyword::$inst), =>, Instruction::$inst)(input)
         }
     };
 }
@@ -1037,24 +1421,43 @@ misc_inst!(err, Err);
 misc_inst!(sys, Sys);
 misc_inst!(clrk, ClrK);
 
-fn alu3_args<'a>() -> TokenParser<'a, (Register, Register, AluRhs)> {
-    (register().require(error!("expected register")) << comma_sep().require(error!("expected `,`"))
-        & register().require(error!("expected register"))
-            << comma_sep().require(error!("expected `,`"))
-        & alu_rhs().require(error!("expected register or expression")))
-    .map(|((d, l), r)| (d, l, r))
+fn inst_req_ws(input: TokenInput) -> ParseResult<()> {
+    require(
+        whitespace1,
+        error!(
+            "expected whitespace",
+            "whitespace is required between the instruction and its arguments"
+        ),
+    )(input)
+}
+
+fn inst_req_reg(input: TokenInput) -> ParseResult<Register> {
+    require(register, error!("expected register"))(input)
+}
+
+fn inst_req_expr(input: TokenInput) -> ParseResult<Expression> {
+    require(expr, error!("expected expression"))(input)
+}
+
+fn inst_req_comma(input: TokenInput) -> ParseResult<()> {
+    require(comma_sep, error!("expected `,`"))(input)
+}
+
+fn inst_req_alu_rhs(input: TokenInput) -> ParseResult<AluRhs> {
+    require(alu_rhs, error!("expected register or expression"))(input)
+}
+
+fn alu3_args(input: TokenInput) -> ParseResult<(Register, Register, AluRhs)> {
+    map(
+        parser!(inst_req_reg, <<, inst_req_comma, &, inst_req_reg, <<, inst_req_comma, &, inst_req_alu_rhs),
+        |((d, l), r)| (d, l, r),
+    )(input)
 }
 
 macro_rules! alu3_inst {
     ($name:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$inst)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> alu3_args())
-            .map(|(d, l, r)| Instruction::$inst { d, l, r })
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, alu3_args), |(d, l, r)| Instruction::$inst { d, l, r })(input)
         }
     };
 }
@@ -1075,79 +1478,60 @@ alu3_inst!(mulhss, MulHss);
 alu3_inst!(mulhsu, MulHsu);
 alu3_inst!(csub, CSub);
 
-fn alu2_args<'a>() -> TokenParser<'a, (Register, Register)> {
-    register().require(error!("expected register")) << comma_sep().require(error!("expected `,`"))
-        & register().require(error!("expected register"))
+fn alu2_args(input: TokenInput) -> ParseResult<(Register, Register)> {
+    parser!(inst_req_reg, <<, inst_req_comma, &, inst_req_reg)(input)
 }
 
-fn alu2_imm_args<'a>() -> TokenParser<'a, (Register, Expression)> {
-    register().require(error!("expected register")) << comma_sep().require(error!("expected `,`"))
-        & expr().require(error!("expected expression"))
+fn alu2_imm_args(input: TokenInput) -> ParseResult<(Register, Expression)> {
+    parser!(inst_req_reg, <<, inst_req_comma, &, inst_req_expr)(input)
 }
 
 macro_rules! alu2_inst {
     ($name:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$inst)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> alu2_args())
-            .map(|(d, s)| Instruction::$inst { d, s })
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, alu2_args)
+            , |(d, s)| Instruction::$inst { d, s })(input)
         }
     };
 }
 
 alu2_inst!(slc, Slc);
 
-fn mov<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::Mov)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> alu2_args())
-    .map(|(d, s)| Instruction::Or {
-        d,
-        l: Register::ZERO,
-        r: AluRhs::Register(s),
-    })
+fn mov(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Mov), >>, inst_req_ws, >>, alu2_args),
+        |(d, s)| Instruction::Or {
+            d,
+            l: Register::ZERO,
+            r: AluRhs::Register(s),
+        },
+    )(input)
 }
 
-fn ldi<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::LdI)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> alu2_imm_args())
-    .map(|(d, imm)| Instruction::Or {
-        d,
-        l: Register::ZERO,
-        r: AluRhs::Immediate(imm),
-    })
+fn ldi(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::LdI), >>, inst_req_ws, >>, alu2_imm_args),
+        |(d, imm)| Instruction::Or {
+            d,
+            l: Register::ZERO,
+            r: AluRhs::Immediate(imm),
+        },
+    )(input)
 }
 
-fn alu_no_store_args<'a>() -> TokenParser<'a, (Register, AluRhs)> {
-    register().require(error!("expected register")) << comma_sep().require(error!("expected `,`"))
-        & alu_rhs().require(error!("expected register or expression"))
+fn alu_no_store_args(input: TokenInput) -> ParseResult<(Register, AluRhs)> {
+    parser!(inst_req_reg, <<, inst_req_comma, &, inst_req_alu_rhs)(input)
 }
 
 macro_rules! alu_no_store_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$kw)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> alu_no_store_args())
-            .map(|(l, r)| Instruction::$inst {
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(parser!(keyword(Keyword::$kw), >>, inst_req_ws, >>, alu_no_store_args)
+            , |(l, r)| Instruction::$inst {
                 d: Register::ZERO,
                 l,
                 r,
-            })
+            })(input)
         }
     };
 }
@@ -1155,166 +1539,131 @@ macro_rules! alu_no_store_inst {
 alu_no_store_inst!(cmp, Cmp, Sub);
 alu_no_store_inst!(bit, Bit, And);
 
-fn test<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::Test)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> register().require(error!("expected register")))
-    .map(|s| Instruction::Or {
-        d: Register::ZERO,
-        l: s,
-        r: AluRhs::Register(Register::ZERO),
-    })
+fn test(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Test), >>, inst_req_ws, >>, inst_req_reg),
+        |s| Instruction::Or {
+            d: Register::ZERO,
+            l: s,
+            r: AluRhs::Register(Register::ZERO),
+        },
+    )(input)
 }
 
-fn inc<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::Inc)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> register().require(error!("expected register")))
-    .map(|d| Instruction::Add {
-        d,
-        l: d,
-        r: AluRhs::Immediate(Expression::new_dummy_constant(1)),
-    })
+fn inc(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Inc), >>, inst_req_ws, >>, inst_req_reg),
+        |d| Instruction::Add {
+            d,
+            l: d,
+            r: AluRhs::Immediate(Expression::new_dummy_constant(1)),
+        },
+    )(input)
 }
 
-fn incc<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::IncC)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> register().require(error!("expected register")))
-    .map(|d| Instruction::AddC {
-        d,
-        l: d,
-        r: AluRhs::Immediate(Expression::new_dummy_constant(0)),
-    })
+fn incc(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::IncC), >>, inst_req_ws, >>, inst_req_reg),
+        |d| Instruction::AddC {
+            d,
+            l: d,
+            r: AluRhs::Immediate(Expression::new_dummy_constant(0)),
+        },
+    )(input)
 }
 
-fn dec<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::Dec)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> register().require(error!("expected register")))
-    .map(|d| Instruction::Sub {
-        d,
-        l: d,
-        r: AluRhs::Immediate(Expression::new_dummy_constant(1)),
-    })
+fn dec(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Dec), >>, inst_req_ws, >>, inst_req_reg),
+        |d| Instruction::Sub {
+            d,
+            l: d,
+            r: AluRhs::Immediate(Expression::new_dummy_constant(1)),
+        },
+    )(input)
 }
 
-fn decb<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::DecB)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> register().require(error!("expected register")))
-    .map(|d| Instruction::SubB {
-        d,
-        l: d,
-        r: AluRhs::Immediate(Expression::new_dummy_constant(0)),
-    })
+fn decb(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::DecB), >>, inst_req_ws, >>, inst_req_reg),
+        |d| Instruction::SubB {
+            d,
+            l: d,
+            r: AluRhs::Immediate(Expression::new_dummy_constant(0)),
+        },
+    )(input)
 }
 
-fn neg<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::Neg)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> alu2_args())
-    .map(|(d, s)| Instruction::Sub {
-        d,
-        l: Register::ZERO,
-        r: AluRhs::Register(s),
-    })
+fn neg(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Neg), >>, inst_req_ws, >>, alu2_args),
+        |(d, s)| Instruction::Sub {
+            d,
+            l: Register::ZERO,
+            r: AluRhs::Register(s),
+        },
+    )(input)
 }
 
-fn negb<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::NegB)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> alu2_args())
-    .map(|(d, s)| Instruction::SubB {
-        d,
-        l: Register::ZERO,
-        r: AluRhs::Register(s),
-    })
+fn negb(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::NegB), >>, inst_req_ws, >>, alu2_args),
+        |(d, s)| Instruction::SubB {
+            d,
+            l: Register::ZERO,
+            r: AluRhs::Register(s),
+        },
+    )(input)
 }
 
-fn not<'a>() -> TokenParser<'a, Instruction> {
-    (keyword(Keyword::Not)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> alu2_args())
-    .map(|(d, s)| Instruction::Xor {
-        d,
-        l: s,
-        r: AluRhs::Immediate(Expression::new_dummy_constant(-1)),
-    })
+fn not(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Not), >>, inst_req_ws, >>, alu2_args),
+        |(d, s)| Instruction::Xor {
+            d,
+            l: s,
+            r: AluRhs::Immediate(Expression::new_dummy_constant(-1)),
+        },
+    )(input)
 }
 
-fn offset_arg<'a>() -> TokenParser<'a, (Register, Expression)> {
-    (register()
-        & (comma_sep() >> expr())
-            .opt()
-            .map(|o| o.unwrap_or(Expression::new_dummy_constant(0))))
-        | expr().map(|o| (Register(u5!(0)), o))
+fn offset_arg(input: TokenInput) -> ParseResult<(Register, Expression)> {
+    let reg_arg = parser!(register, &, or_return(parser!(comma_sep, >>, expr), Expression::new_dummy_constant(0)));
+    parser!(reg_arg, |, map(expr, |o| (Register(u5!(0)), o)))(input)
 }
 
-fn mem_arg<'a>() -> TokenParser<'a, (Register, Expression)> {
-    in_brackets(offset_arg().require(error!("expected offset")))
+fn mem_arg(input: TokenInput) -> ParseResult<(Register, Expression)> {
+    in_brackets(require(offset_arg, error!("expected offset")))(input)
 }
 
-fn ld_args<'a>() -> TokenParser<'a, (Register, Register, Expression)> {
-    (register().require(error!("expected register")) << comma_sep().require(error!("expected `,`"))
-        & mem_arg())
-    .map(|(d, (s, o))| (d, s, o))
+fn ld_args(input: TokenInput) -> ParseResult<(Register, Register, Expression)> {
+    map(
+        parser!(inst_req_reg, <<, inst_req_comma, &, mem_arg),
+        |(d, (s, o))| (d, s, o),
+    )(input)
 }
 
-fn st_args<'a>() -> TokenParser<'a, (Register, Expression, Register)> {
-    (mem_arg() << comma_sep().require(error!("expected `,`"))
-        & register().require(error!("expected register")))
-    .map(|((d, o), s)| (d, o, s))
+fn st_args(input: TokenInput) -> ParseResult<(Register, Expression, Register)> {
+    map(
+        parser!(mem_arg, <<, inst_req_comma, &, inst_req_reg),
+        |((d, o), s)| (d, o, s),
+    )(input)
 }
 
 macro_rules! ld_inst {
     ($name:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$inst)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> ld_args())
-            .map(|(d, s, o)| Instruction::$inst { d, s, o })
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, ld_args)
+            , |(d, s, o)| Instruction::$inst { d, s, o })(input)
         }
     };
 }
 
 macro_rules! st_inst {
     ($name:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$inst)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> st_args())
-            .map(|(d, o, s)| Instruction::$inst { d, o, s })
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, st_args)
+            , |(d, o, s)| Instruction::$inst { d, o, s })(input)
         }
     };
 }
@@ -1331,35 +1680,25 @@ st_inst!(st8, St8);
 st_inst!(st16, St16);
 st_inst!(io_out, Out);
 
-fn jmp<'a>() -> TokenParser<'a, Instruction> {
-    keyword(Keyword::Jmp)
-        >> whitespace1().require(error!(
-            "expected whitespace",
-            "whitespace is required between the instruction and its arguments"
-        ))
-        >> (mem_arg().map(|(s, o)| Instruction::Jmp {
+fn jmp(input: TokenInput) -> ParseResult<Instruction> {
+    let arg = parser!(map(mem_arg, |(s, o)| Instruction::Jmp {
+        s,
+        o,
+        indirect: true,
+    }) ,|, map(require(offset_arg, error!("expected offset")), |(s, o)| Instruction::Jmp {
             s,
             o,
-            indirect: true,
-        }) | offset_arg()
-            .require(error!("expected offset"))
-            .map(|(s, o)| Instruction::Jmp {
-                s,
-                o,
-                indirect: false,
-            }))
+            indirect: false,
+        }));
+
+    parser!(keyword(Keyword::Jmp), >>, inst_req_ws, >>, arg)(input)
 }
 
 macro_rules! br_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$kw)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> expr().require(error!("expected expression")))
-            .map(|d| Instruction::$inst { d })
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(parser!(keyword(Keyword::$kw), >>, inst_req_ws, >>, inst_req_expr)
+            , |d| Instruction::$inst { d })(input)
         }
     };
 }
@@ -1386,16 +1725,11 @@ br_inst!(bra, Bra, Bra);
 
 macro_rules! ui_inst {
     ($name:ident, $inst:ident) => {
-        fn $name<'a>() -> TokenParser<'a, Instruction> {
-            (keyword(Keyword::$inst)
-                >> whitespace1().require(error!(
-                    "expected whitespace",
-                    "whitespace is required between the instruction and its arguments"
-                ))
-                >> register().require(error!("expected register"))
-                << comma_sep().require(error!("expected `,`"))
-                & expr().require(error!("expected expression")))
-            .map(|(d, ui)| Instruction::$inst { d, ui })
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(
+                parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, inst_req_reg, <<, inst_req_comma, &, inst_req_expr),
+                |(d, ui)| Instruction::$inst { d, ui }
+            )(input)
         }
     };
 }
@@ -1403,73 +1737,14 @@ macro_rules! ui_inst {
 ui_inst!(ldui, LdUi);
 ui_inst!(addpcui, AddPcUi);
 
-fn inst<'a>() -> TokenParser<'a, Instruction> {
-    nop()
-        | brk()
-        | hlt()
-        | err()
-        | sys()
-        | clrk()
-        | add()
-        | addc()
-        | sub()
-        | subb()
-        | and()
-        | or()
-        | xor()
-        | shl()
-        | lsr()
-        | asr()
-        | mul()
-        | mulhuu()
-        | mulhss()
-        | mulhsu()
-        | csub()
-        | slc()
-        | mov()
-        | ldi()
-        | cmp()
-        | bit()
-        | test()
-        | inc()
-        | incc()
-        | dec()
-        | decb()
-        | neg()
-        | negb()
-        | not()
-        | ld()
-        | ld8()
-        | ld8s()
-        | ld16()
-        | ld16s()
-        | io_in()
-        | st()
-        | st8()
-        | st16()
-        | io_out()
-        | jmp()
-        | brc()
-        | brz()
-        | brs()
-        | bro()
-        | brnc()
-        | brnz()
-        | brns()
-        | brno()
-        | breq()
-        | brneq()
-        | brul()
-        | bruge()
-        | brule()
-        | brug()
-        | brsl()
-        | brsge()
-        | brsle()
-        | brsg()
-        | bra()
-        | ldui()
-        | addpcui()
+fn inst(input: TokenInput) -> ParseResult<Instruction> {
+    choice!(
+        nop, brk, hlt, err, sys, clrk, add, addc, sub, subb, and, or, xor, shl, lsr, asr, mul,
+        mulhuu, mulhss, mulhsu, csub, slc, mov, ldi, cmp, bit, test, inc, incc, dec, decb, neg,
+        negb, not, ld, ld8, ld8s, ld16, ld16s, io_in, st, st8, st16, io_out, jmp, brc, brz, brs,
+        bro, brnc, brnz, brns, brno, breq, brneq, brul, bruge, brule, brug, brsl, brsge, brsle,
+        brsg, bra, ldui, addpcui
+    )(input)
 }
 
 #[derive(Debug, Clone)]
@@ -1516,17 +1791,19 @@ impl Line {
 pub fn parse_line(line: &[Token]) -> Result<Line, ParseError> {
     let input = TokenInput::new(line);
 
-    let line_content = label_def().map(LineKind::Label)
-        | const_def().map(|(name, expr)| LineKind::Define(name, expr))
-        | dir().map(LineKind::Directive)
-        | inst().map(LineKind::Instruction);
-
-    let parser = whitespace0() >> line_content << whitespace0() << eof().require(
-        error!(all "unexpected line continuation", all "this already forms a complete instruction"),
+    let line_content = choice!(
+        parser!(label_def, ->, LineKind::Label),
+        parser!(const_def, ->, |(name, expr)| LineKind::Define(name, expr)),
+        parser!(dir, ->, LineKind::Directive),
+        parser!(inst, ->, LineKind::Instruction)
     );
 
-    match parser.run(input) {
-        ParseResult::Match(_, kind) => Ok(Line {
+    let parser = parser!(whitespace0, >>, line_content, <<, whitespace0, <<, require(eof,
+        error!(all "unexpected line continuation", all "this already forms a complete instruction"),
+    ));
+
+    match parser(input) {
+        ParseResult::Match { value: kind, .. } => Ok(Line {
             kind,
             number: line.first().unwrap().span().line(),
             span: line
@@ -1543,6 +1820,6 @@ pub fn parse_line(line: &[Token]) -> Result<Line, ParseError> {
                 .combine(line.last().unwrap().span());
             Err(ParseError::new(full_span, "invalid instruction"))
         }
-        ParseResult::Err(_, err) => Err(err),
+        ParseResult::Err(err) => Err(err),
     }
 }

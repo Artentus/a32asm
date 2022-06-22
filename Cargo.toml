@@ -3,9 +3,11 @@ name = "a32asm"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+debug = true
+
 [dependencies]
 line-span = "0.1"
 termcolor = "1.1"
 static_assertions = "1.1"
 ahash = "0.7"
-rparse = { path = "../rparse", features = ["operators"] }
