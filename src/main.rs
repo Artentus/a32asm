@@ -170,7 +170,7 @@ impl Message {
 
         let mut line_number_width = 1;
         for line_span in full_lines.iter() {
-            line_number_width = line_number_width.max(format!("{}", line_span.line()).len());
+            line_number_width = line_number_width.max(format!("{}", line_span.line() + 1).len());
         }
 
         let kind_color = match self.kind {
@@ -193,8 +193,8 @@ impl Message {
             writer,
             "{}:{}:{}",
             self.span.file_path().display(),
-            self.span.line(),
-            self.span.column(),
+            self.span.line() + 1,
+            self.span.column() + 1,
         )?;
 
         writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
@@ -203,7 +203,7 @@ impl Message {
         let mut line_iter = lines.iter();
         for line_span in full_lines.iter() {
             writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
-            write!(writer, "{} | ", line_span.line())?;
+            write!(writer, "{} | ", line_span.line() + 1)?;
 
             writer.set_color(ColorSpec::new().set_bold(false).set_fg(Some(Color::White)))?;
             writeln!(writer, "{}", line_span.text())?;
