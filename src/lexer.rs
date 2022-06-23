@@ -43,6 +43,26 @@ pub struct TextSpan {
 }
 impl TextSpan {
     #[inline]
+    fn new(
+        file: &Rc<InputFile>,
+        line: usize,
+        column: usize,
+        byte_start: usize,
+        byte_end: usize,
+    ) -> Self {
+        assert!(byte_start <= byte_end);
+        assert!(byte_end <= file.text.len());
+
+        Self {
+            file: Rc::clone(file),
+            line,
+            column,
+            byte_start,
+            byte_end,
+        }
+    }
+
+    #[inline]
     pub fn file_path(&self) -> &Path {
         &self.file.path
     }
@@ -71,19 +91,23 @@ impl TextSpan {
         let mut column = self.column;
         loop {
             let byte_end = find_line_end(&self.file.text, byte_start);
-            result.push(Self {
-                file: Rc::clone(&self.file),
-                line: self.line + line_offset,
+            result.push(Self::new(
+                &self.file,
+                self.line + line_offset,
                 column,
                 byte_start,
-                byte_end: byte_end.min(self.byte_end),
-            });
+                byte_end.min(self.byte_end),
+            ));
 
             if byte_end < self.byte_end {
                 if let Some(next_start) = find_next_line_start(&self.file.text, byte_end) {
-                    byte_start = next_start;
-                    line_offset += 1;
-                    column = 0;
+                    if next_start >= self.byte_end {
+                        break;
+                    } else {
+                        byte_start = next_start;
+                        line_offset += 1;
+                        column = 0;
+                    }
                 } else {
                     break;
                 }
@@ -103,18 +127,22 @@ impl TextSpan {
         let mut line_offset = 0;
         loop {
             let byte_end = find_line_end(&self.file.text, byte_start);
-            result.push(Self {
-                file: Rc::clone(&self.file),
-                line: self.line + line_offset,
-                column: 0,
+            result.push(Self::new(
+                &self.file,
+                self.line + line_offset,
+                0,
                 byte_start,
                 byte_end,
-            });
+            ));
 
             if byte_end < self.byte_end {
                 if let Some(next_start) = find_next_line_start(&self.file.text, byte_end) {
-                    byte_start = next_start;
-                    line_offset += 1;
+                    if next_start >= self.byte_end {
+                        break;
+                    } else {
+                        byte_start = next_start;
+                        line_offset += 1;
+                    }
                 } else {
                     break;
                 }
@@ -132,13 +160,13 @@ impl TextSpan {
         let mut iter = self.file.text[byte_start..self.byte_end].char_indices();
         let (byte_len, _) = iter.nth(char_count).expect("Out of parent range");
 
-        Self {
-            file: Rc::clone(&self.file),
-            line: self.line,
-            column: self.column + column_offset,
+        Self::new(
+            &self.file,
+            self.line,
+            self.column + column_offset,
             byte_start,
-            byte_end: byte_start + byte_len,
-        }
+            byte_start + byte_len,
+        )
     }
 
     pub fn combine(&self, other: &Self) -> Self {
@@ -148,13 +176,13 @@ impl TextSpan {
             other
         };
 
-        Self {
-            file: Rc::clone(&self.file),
-            line: start_span.line,
-            column: start_span.column,
-            byte_start: start_span.byte_start,
-            byte_end: self.byte_end.max(other.byte_end),
-        }
+        Self::new(
+            &self.file,
+            start_span.line,
+            start_span.column,
+            start_span.byte_start,
+            self.byte_end.max(other.byte_end),
+        )
     }
 }
 impl std::fmt::Debug for TextSpan {
@@ -805,21 +833,9 @@ fn parse_hex_escape(
                 s.push(c);
                 Ok(())
             } else {
-                let token_span = TextSpan {
-                    file: Rc::clone(&span.file),
-                    line,
-                    column,
-                    byte_start: p,
-                    byte_end: end_p,
-                };
+                let token_span = TextSpan::new(&span.file, line, column, p, end_p);
 
-                let hint_span = TextSpan {
-                    file: Rc::clone(&span.file),
-                    line,
-                    column: column + 2,
-                    byte_start: p + 2,
-                    byte_end: end_p,
-                };
+                let hint_span = TextSpan::new(&span.file, line, column + 2, p + 2, end_p);
 
                 let err = LexerError::new_with_hint(
                     dummy_token,
@@ -832,21 +848,9 @@ fn parse_hex_escape(
                 Err(err)
             }
         } else {
-            let token_span = TextSpan {
-                file: Rc::clone(&span.file),
-                line,
-                column,
-                byte_start: p,
-                byte_end: end_p,
-            };
+            let token_span = TextSpan::new(&span.file, line, column, p, end_p);
 
-            let hint_span = TextSpan {
-                file: Rc::clone(&span.file),
-                line,
-                column: column + 2,
-                byte_start: p + 2,
-                byte_end: end_p,
-            };
+            let hint_span = TextSpan::new(&span.file, line, column + 2, p + 2, end_p);
 
             let err = LexerError::new_with_hint(
                 dummy_token,
@@ -861,13 +865,7 @@ fn parse_hex_escape(
     } else {
         let end_p = iter.peek().map(|(ep, _)| *ep).unwrap_or(text.len());
 
-        let token_span = TextSpan {
-            file: Rc::clone(&span.file),
-            line,
-            column,
-            byte_start: p,
-            byte_end: end_p,
-        };
+        let token_span = TextSpan::new(&span.file, line, column, p, end_p);
 
         let err = LexerError::new_with_hint(
             dummy_token,
@@ -901,13 +899,13 @@ impl Lexer {
     }
 
     fn span(&self) -> TextSpan {
-        TextSpan {
-            file: Rc::clone(self.input.file()),
-            line: self.current_line,
-            column: self.current_column,
-            byte_start: self.current_byte_pos,
-            byte_end: self.input.next_byte_pos(),
-        }
+        TextSpan::new(
+            self.input.file(),
+            self.current_line,
+            self.current_column,
+            self.current_byte_pos,
+            self.input.next_byte_pos(),
+        )
     }
 
     #[inline]
@@ -965,13 +963,13 @@ impl Lexer {
                 } else {
                     let hint_span = self.span();
 
-                    let error_span = TextSpan {
-                        file: Rc::clone(&hint_span.file),
-                        line: self.input.next_line(),
-                        column: self.input.next_column(),
-                        byte_start: self.input.file.text.len(),
-                        byte_end: self.input.file.text.len(),
-                    };
+                    let error_span = TextSpan::new(
+                        &hint_span.file,
+                        self.input.next_line(),
+                        self.input.next_column(),
+                        self.input.file.text.len(),
+                        self.input.file.text.len(),
+                    );
 
                     let err = LexerError::new_with_hint(
                         self.get_token(TokenKind::Comment {
@@ -1195,21 +1193,9 @@ impl Lexer {
                     _ => {
                         let end_p = iter.peek().map(|(ep, _)| *ep).unwrap_or(text.len());
 
-                        let token_span = TextSpan {
-                            file: Rc::clone(&span.file),
-                            line,
-                            column,
-                            byte_start: p,
-                            byte_end: end_p,
-                        };
+                        let token_span = TextSpan::new(&span.file, line, column, p, end_p);
 
-                        let hint_span = TextSpan {
-                            file: Rc::clone(&span.file),
-                            line,
-                            column: column + 1,
-                            byte_start: next_p,
-                            byte_end: end_p,
-                        };
+                        let hint_span = TextSpan::new(&span.file, line, column + 1, next_p, end_p);
 
                         let err = LexerError::new_with_hint(
                             dummy_token.clone(),
@@ -1275,13 +1261,13 @@ impl Lexer {
                 } else {
                     let hint_span = self.span();
 
-                    let error_span = TextSpan {
-                        file: Rc::clone(&hint_span.file),
-                        line: self.input.next_line(),
-                        column: self.input.next_column(),
-                        byte_start: self.input.file.text.len(),
-                        byte_end: self.input.file.text.len(),
-                    };
+                    let error_span = TextSpan::new(
+                        &hint_span.file,
+                        self.input.next_line(),
+                        self.input.next_column(),
+                        self.input.file.text.len(),
+                        self.input.file.text.len(),
+                    );
 
                     let err = LexerError::new_with_hint(
                         self.get_token(TokenKind::dummy_char()),
@@ -1319,13 +1305,13 @@ impl Lexer {
                 } else {
                     let hint_span = self.span();
 
-                    let error_span = TextSpan {
-                        file: Rc::clone(&hint_span.file),
-                        line: self.input.next_line(),
-                        column: self.input.next_column(),
-                        byte_start: self.input.file.text.len(),
-                        byte_end: self.input.file.text.len(),
-                    };
+                    let error_span = TextSpan::new(
+                        &hint_span.file,
+                        self.input.next_line(),
+                        self.input.next_column(),
+                        self.input.file.text.len(),
+                        self.input.file.text.len(),
+                    );
 
                     let err = LexerError::new_with_hint(
                         self.get_token(TokenKind::dummy_string()),
@@ -1363,13 +1349,13 @@ impl Lexer {
                             self.input.file.text.len()
                         };
 
-                    let error_span = TextSpan {
-                        file: Rc::clone(&hint_span.file),
-                        line: hint_span.line,
-                        column: hint_span.column + 1,
-                        byte_start: hint_span.byte_end,
+                    let error_span = TextSpan::new(
+                        &hint_span.file,
+                        hint_span.line,
+                        hint_span.column + 1,
+                        hint_span.byte_end,
                         byte_end,
-                    };
+                    );
 
                     let err = LexerError::new_with_hint(
                         self.get_token(TokenKind::Whitespace),
