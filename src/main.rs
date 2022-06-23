@@ -18,10 +18,12 @@ mod output;
 use output::*;
 
 use ahash::AHashMap;
+use clap::{AppSettings, ArgEnum, Parser};
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::io::Write;
 use std::ops::{ControlFlow, FromResidual, Try};
+use std::path::PathBuf;
 use std::rc::Rc;
 use termcolor::{Color, ColorSpec, WriteColor};
 
@@ -1040,22 +1042,6 @@ fn encode_instruction(
     }
 }
 
-const TEST_FILE: &str = "
-$UART_DATA_IN      = 0x004 // read-only
-$UART_DATA_OUT     = 0x005 // write-only
-$UART_INPUT_COUNT  = 0x006 // read-only
-$UART_OUTPUT_COUNT = 0x007 // read-only
-
-serial_read_byte:
-    .wait:
-        in t0, [$UART_INPUT_COUNT]
-        test t0
-        br.z .wait
-
-    in a0, [$UART_DATA_IN]
-    jmp ra
-";
-
 fn parse_file<W: WriteColor + Write>(
     file: &Rc<InputFile>,
     lines: &mut Vec<Line>,
@@ -1087,25 +1073,20 @@ fn parse_file<W: WriteColor + Write>(
     Ok(has_error)
 }
 
-fn main() -> std::io::Result<()> {
+fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<()> {
     use termcolor::*;
 
     let stdout = StandardStream::stdout(ColorChoice::Auto);
     let mut stdout = stdout.lock();
 
-    let file = InputFile::new_from_memory("test", TEST_FILE);
-
     let mut lines = Vec::new();
     let mut line_start = 0;
-    let has_error = parse_file(&file, &mut lines, &mut line_start, &mut stdout)?;
+    let has_error = parse_file(input, &mut lines, &mut line_start, &mut stdout)?;
 
     if !has_error {
         match associate_label_addresses(&lines) {
             Ok(label_map) => match fold_constants(&lines, &label_map) {
                 Ok(constant_map) => {
-                    let mut output = AnnotatedOutput::new();
-                    let output: &mut dyn Output = &mut output;
-
                     let mut scope_stack = Vec::new();
                     let mut warnings = Vec::new();
 
@@ -1120,12 +1101,7 @@ fn main() -> std::io::Result<()> {
                                     &label_map,
                                 )?;
 
-                                output.write_data(
-                                    &mut stdout,
-                                    &bytes,
-                                    line.number(),
-                                    line.span().text(),
-                                )?
+                                output.write_data(&bytes, line.number(), line.span().text())?
                             }};
                         }
 
@@ -1146,31 +1122,26 @@ fn main() -> std::io::Result<()> {
                                 AssemblerDirective::Int32(vals) => int!(to_int32_bytes, vals),
                                 AssemblerDirective::Int64(vals) => int!(to_int64_bytes, vals),
                                 AssemblerDirective::Ascii(s) => output.write_data(
-                                    &mut stdout,
                                     &to_ascii_bytes(s, false),
                                     line.number(),
                                     line.span().text(),
                                 )?,
                                 AssemblerDirective::AsciiZ(s) => output.write_data(
-                                    &mut stdout,
                                     &to_ascii_bytes(s, true),
                                     line.number(),
                                     line.span().text(),
                                 )?,
                                 AssemblerDirective::Utf8(s) => output.write_data(
-                                    &mut stdout,
                                     s.as_bytes(),
                                     line.number(),
                                     line.span().text(),
                                 )?,
                                 AssemblerDirective::Utf16(s) => output.write_data(
-                                    &mut stdout,
                                     &to_utf16_bytes(s),
                                     line.number(),
                                     line.span().text(),
                                 )?,
                                 AssemblerDirective::Unicode(s) => output.write_data(
-                                    &mut stdout,
                                     &to_unicode_bytes(s),
                                     line.number(),
                                     line.span().text(),
@@ -1189,7 +1160,6 @@ fn main() -> std::io::Result<()> {
                                 ) {
                                     Ok(word) => {
                                         output.write_instruction(
-                                            &mut stdout,
                                             word,
                                             line.number(),
                                             line.span().text(),
@@ -1199,7 +1169,6 @@ fn main() -> std::io::Result<()> {
                                         msg.pretty_print(&mut stdout)?;
 
                                         output.write_instruction(
-                                            &mut stdout,
                                             (0x3 << 3) | 0b000u32,
                                             line.number(),
                                             line.span().text(),
@@ -1221,5 +1190,42 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    Ok(())
+    output.flush()
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ArgEnum)]
+enum OutputFormat {
+    Binary,
+    Annotated,
+}
+
+#[derive(Debug, Parser)]
+#[clap(author, version, about, long_about = None)]
+#[clap(global_setting(AppSettings::DeriveDisplayOrder))]
+struct Args {
+    /// Input file
+    #[clap(value_parser, value_name = "INPUT FILE")]
+    input: PathBuf,
+
+    /// Output file
+    #[clap(short, long, value_parser, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Output format
+    #[clap(short, long, arg_enum, value_parser, default_value_t = OutputFormat::Binary)]
+    format: OutputFormat,
+}
+
+fn main() -> std::io::Result<()> {
+    let args = Args::parse();
+
+    let output_path = args
+        .output
+        .unwrap_or_else(|| args.input.with_extension("bin"));
+    let input_file = InputFile::new(args.input)?;
+
+    match args.format {
+        OutputFormat::Binary => assemble(&input_file, &mut BinaryOutput::new(&output_path)?),
+        OutputFormat::Annotated => assemble(&input_file, &mut AnnotatedOutput::new(&output_path)?),
+    }
 }
