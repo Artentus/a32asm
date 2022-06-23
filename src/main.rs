@@ -615,9 +615,7 @@ fn tokenize_file<W: WriteColor + Write>(
         match token {
             Ok(token) => match &token.kind() {
                 TokenKind::NewLine | TokenKind::Comment { has_new_line: true } => {
-                    if line_bounds.last().copied().unwrap_or(0) < tokens.len() {
-                        line_bounds.push(tokens.len());
-                    }
+                    line_bounds.push(tokens.len());
                 }
                 _ => tokens.push(token),
             },
@@ -1051,19 +1049,35 @@ fn parse_file<W: WriteColor + Write>(
     let (tokens, line_bounds, mut has_error) = tokenize_file(&file, writer)?;
 
     for line_end in line_bounds {
-        match parse_line(&tokens[*line_start..line_end]) {
-            Ok(line) => {
-                if let LineKind::Directive(AssemblerDirective::Include(path)) = line.kind() {
-                    let current_dir = file.path().parent().expect("invalid file path");
-                    let include_file = InputFile::new(current_dir.join(path.as_ref()))?;
-                    has_error |= parse_file(&include_file, lines, line_start, writer)?;
-                } else {
-                    lines.push(line);
+        if line_end > *line_start {
+            let line = &tokens[*line_start..line_end];
+
+            let mut is_ws = true;
+            for token in line.iter() {
+                match token.kind() {
+                    TokenKind::Whitespace => {}
+                    TokenKind::Comment { .. } => {}
+                    _ => is_ws = false,
                 }
             }
-            Err(err) => {
-                has_error = true;
-                err.pretty_print(writer)?;
+
+            if !is_ws {
+                match parse_line(line) {
+                    Ok(line) => {
+                        if let LineKind::Directive(AssemblerDirective::Include(path)) = line.kind()
+                        {
+                            let current_dir = file.path().parent().expect("invalid file path");
+                            let include_file = InputFile::new(current_dir.join(path.as_ref()))?;
+                            has_error |= parse_file(&include_file, lines, line_start, writer)?;
+                        } else {
+                            lines.push(line);
+                        }
+                    }
+                    Err(err) => {
+                        has_error = true;
+                        err.pretty_print(writer)?;
+                    }
+                }
             }
         }
 
