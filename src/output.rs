@@ -111,7 +111,10 @@ impl Output for AnnotatedOutput {
         writeln!(
             self.file,
             "{:0>8X}: {:0>8X} | {: >4}: {}",
-            self.current_address, inst, line, source
+            self.current_address,
+            inst,
+            line + 1,
+            source
         )?;
         self.current_address += 4;
         Ok(())
@@ -123,7 +126,7 @@ impl Output for AnnotatedOutput {
             "{:0>8X}:{} | {: >4}: {}",
             self.current_address,
             display_data(data),
-            line,
+            line + 1,
             source
         )?;
         self.current_address += data.len() as u32;
