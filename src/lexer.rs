@@ -20,6 +20,7 @@ impl InputFile {
         }))
     }
 
+    #[cfg(test)]
     pub fn new_from_memory<T: Into<Cow<'static, str>>>(name: &str, text: T) -> Rc<Self> {
         Rc::new(Self {
             path: name.into(),

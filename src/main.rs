@@ -870,7 +870,9 @@ fn encode_branch_instruction(
         warnings.push(msg);
     }
 
-    let rel = d_bin - (current_address as i64);
+    // PC is incremented once while this instruction is fetched,
+    // so we need to subtract another 4 from the relative address.
+    let rel = d_bin - (current_address as i64) - 4;
     if let Some(rel) = i22::new(rel) {
         let rel = (rel.into_inner() as u32) & 0x3F_FFFC;
 
@@ -912,8 +914,8 @@ fn encode_upper_immediate_instruction(
     let ui_bin = evaluate_folded(ui, scope, constant_map, label_map)? as u32;
 
     Ok((ui_bin & 0x8000_0000)
-        | ((ui_bin & 0x3000) << 29)
-        | ((ui_bin & 0x7FFF_C000) << 12)
+        | ((ui_bin & 0x3000) << 17)
+        | ((ui_bin & 0x7FFF_C000) >> 2)
         | (d_bin << 7)
         | (kind_bin << 3)
         | 0b110)
@@ -1242,4 +1244,90 @@ fn main() -> std::io::Result<()> {
         OutputFormat::Binary => assemble(&input_file, &mut BinaryOutput::new(&output_path)?),
         OutputFormat::Annotated => assemble(&input_file, &mut AnnotatedOutput::new(&output_path)?),
     }
+}
+
+#[cfg(test)]
+fn to_bytes(words: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(words.len() * std::mem::size_of::<u32>());
+    for word in words.iter() {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+#[cfg(test)]
+fn test_assembly(input: &'static str, expected_output: &[u32]) {
+    let input_file = InputFile::new_from_memory("test", input);
+    let mut output = TestOutput::new();
+    assemble(&input_file, &mut output).unwrap();
+
+    let output = output.into_inner();
+    let expected_output = to_bytes(expected_output);
+    assert_eq!(output, expected_output);
+}
+
+#[test]
+fn assembles_nop_instruction() {
+    test_assembly("nop", &[0]);
+}
+
+#[test]
+fn assembles_alu_reg_instruction() {
+    test_assembly(
+        "and r1, r2, r3",
+        &[0b_0000000000_00011_00010_00001_0100_001],
+    );
+}
+
+#[test]
+fn assembles_alu_imm_instruction() {
+    test_assembly("xor r4, r5, 10", &[0b_000000000001010_00101_00100_0110_010]);
+}
+
+#[test]
+fn assembles_alu_imm_negative_instruction() {
+    test_assembly(
+        "mul r6, r7, -10",
+        &[0b_111111111110110_00111_00110_1010_010],
+    );
+}
+
+#[test]
+fn assembles_alu_imm_overflow_instruction() {
+    test_assembly(
+        "csub r8, r9, 1_131_619_459",
+        &[0b_010010010000011_01001_01000_1110_010],
+    );
+}
+
+#[test]
+fn assembles_alu_imm_overflow_negative_instruction() {
+    test_assembly(
+        "add r10, r11, -1_131_619_459",
+        &[0b_101101101111101_01011_01010_0000_010],
+    );
+}
+
+#[test]
+fn assembles_branch_instruction() {
+    test_assembly(
+        "bra target\nnop\ntarget:",
+        &[0b_0_000000000001_0000000_00000_1111_101, 0],
+    );
+}
+
+#[test]
+fn assembles_branch_negative_instruction() {
+    test_assembly(
+        "target:\nnop\nbra target",
+        &[0, 0b_1_111111111110_1111111_00000_1111_101],
+    );
+}
+
+#[test]
+fn assembles_ldui_instruction() {
+    test_assembly(
+        "ldui r12, 1_755_879_355",
+        &[0b_0_01_11010001010100010_01100_0000_110],
+    );
 }
