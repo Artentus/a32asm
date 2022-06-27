@@ -870,9 +870,7 @@ fn encode_branch_instruction(
         warnings.push(msg);
     }
 
-    // PC is incremented once while this instruction is fetched,
-    // so we need to subtract another 4 from the relative address.
-    let rel = d_bin - (current_address as i64) - 4;
+    let rel = d_bin - (current_address as i64);
     if let Some(rel) = i22::new(rel) {
         let rel = (rel.into_inner() as u32) & 0x3F_FFFC;
 
@@ -1312,7 +1310,7 @@ fn assembles_alu_imm_overflow_negative_instruction() {
 fn assembles_branch_instruction() {
     test_assembly(
         "bra target\nnop\ntarget:",
-        &[0b_0_000000000001_0000000_00000_1111_101, 0],
+        &[0b_0_000000000010_0000000_00000_1111_101, 0],
     );
 }
 
@@ -1320,7 +1318,7 @@ fn assembles_branch_instruction() {
 fn assembles_branch_negative_instruction() {
     test_assembly(
         "target:\nnop\nbra target",
-        &[0, 0b_1_111111111110_1111111_00000_1111_101],
+        &[0, 0b_1_111111111111_1111111_00000_1111_101],
     );
 }
 
