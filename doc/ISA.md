@@ -103,8 +103,10 @@
 | `ST16    [d, v], s` | `vvvvvvvvvv_vvvvv_sssss_ddddd_1-10_011` | `-           ` | `mem[d + v] = (i16)s` |
 | `OUT     [d, v], s` | `vvvvvvvvvv_vvvvv_sssss_ddddd_1-11_011` | `-           ` | `io[d + v] = s` |
 | -                   |                                         |                |           |
-| `JMP     s, v     ` | `vvvvvvvvvv_vvvvv_sssss_-----_---0_100` | `-           ` | `pc = s + v` |
-| `JMP     [s, v]   ` | `vvvvvvvvvv_vvvvv_sssss_-----_---1_100` | `-           ` | `pc = mem[s + v]` |
+| `JMP     s, v     ` | `vvvvvvvvvv_vvvvv_sssss_-----_0--0_100` | `-           ` | `pc = s + v` |
+| `JMP     [s, v]   ` | `vvvvvvvvvv_vvvvv_sssss_-----_0--1_100` | `-           ` | `pc = mem[s + v]` |
+| -                   |                                         |                |           |
+| `LINK    d, v     ` | `vvvvvvvvvv_vvvvv_-----_ddddd_1---_100` | `-           ` | `d = pc + v` |
 | -                   |                                         |                |           |
 | `BR.C    v        ` | `vvvvvvvvvv_vvvvv_vvvvv_-----_0001_101` | `-           ` | `if C then pc += v` |
 | `BR.Z    v        ` | `vvvvvvvvvv_vvvvv_vvvvv_-----_0010_101` | `-           ` | `if Z then pc += v` |

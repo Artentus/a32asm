@@ -826,6 +826,19 @@ fn encode_jump_instruction(
     Ok((o_bin << 17) | (s_bin << 12) | (op_bin << 3) | 0b100)
 }
 
+fn encode_link_instruction(
+    d: Register,
+    o: &Expression,
+    scope: &[&str],
+    constant_map: &AHashMap<SharedString, i64>,
+    label_map: &AHashMap<String, u32>,
+) -> Result<u32, Message> {
+    let d_bin = d.0.into_inner() as u32;
+    let o_bin = evaluate_folded(o, scope, constant_map, label_map)? as u32;
+
+    Ok((o_bin << 17) | (d_bin << 7) | (0b1000 << 3) | 0b100)
+}
+
 #[rustfmt::skip]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -1017,6 +1030,9 @@ fn encode_instruction(
         Instruction::Out { d, o, s } => st!(Out, d, o, s),
         Instruction::Jmp { s, o, indirect } => {
             encode_jump_instruction(*s, o, *indirect, scope, constant_map, label_map)
+        }
+        Instruction::Link { d, o } => {
+            encode_link_instruction(*d, o, scope, constant_map, label_map)
         }
         Instruction::BrC { d } => br!(Carry, d),
         Instruction::BrZ { d } => br!(Zero, d),
@@ -1304,6 +1320,11 @@ fn assembles_alu_imm_overflow_negative_instruction() {
         "add r10, r11, -1_131_619_459",
         &[0b_101101101111101_01011_01010_0000_010],
     );
+}
+
+#[test]
+fn assembles_link_instruction() {
+    test_assembly("link r13, 8", &[0b_000000000001000_00000_01101_1000_100]);
 }
 
 #[test]

@@ -341,6 +341,7 @@ pub enum Keyword {
     Out,
 
     Jmp,
+    Link,
 
     BrC,
     BrZ,
@@ -419,6 +420,7 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
     ("out"    , Keyword::Out    ),
 
     ("jmp"    , Keyword::Jmp    ),
+    ("link"   , Keyword::Link   ),
 
     ("br.c"   , Keyword::BrC    ),
     ("br.z"   , Keyword::BrZ    ),

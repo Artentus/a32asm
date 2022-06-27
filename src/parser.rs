@@ -1319,7 +1319,8 @@ pub enum Instruction {
     St16 { d: Register, o: Expression, s: Register },
     Out  { d: Register, o: Expression, s: Register },
 
-    Jmp { s: Register, o: Expression, indirect: bool },
+    Jmp  { s: Register, o: Expression, indirect: bool },
+    Link { d: Register, o: Expression },
 
     BrC   { d: Expression },
     BrZ   { d: Expression },
@@ -1383,6 +1384,7 @@ impl Display for Instruction {
                     write!(f, "jmp {}, {}", s, o)
                 }
             }
+            Self::Link { d, o } => write!(f, "link {}, {}", d, o),
             Self::BrC { d } => write!(f, "br.c {}", d),
             Self::BrZ { d } => write!(f, "br.z {}", d),
             Self::BrS { d } => write!(f, "br.s {}", d),
@@ -1694,6 +1696,13 @@ fn jmp(input: TokenInput) -> ParseResult<Instruction> {
     parser!(keyword(Keyword::Jmp), >>, inst_req_ws, >>, arg)(input)
 }
 
+fn link(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Link), >>, inst_req_ws, >>, inst_req_reg, <<, inst_req_comma, &, inst_req_expr),
+        |(d, o)| Instruction::Link { d, o },
+    )(input)
+}
+
 macro_rules! br_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
         fn $name(input: TokenInput) -> ParseResult<Instruction> {
@@ -1741,9 +1750,9 @@ fn inst(input: TokenInput) -> ParseResult<Instruction> {
     choice!(
         nop, brk, hlt, err, sys, clrk, add, addc, sub, subb, and, or, xor, shl, lsr, asr, mul,
         mulhuu, mulhss, mulhsu, csub, slc, mov, ldi, cmp, bit, test, inc, incc, dec, decb, neg,
-        negb, not, ld, ld8, ld8s, ld16, ld16s, io_in, st, st8, st16, io_out, jmp, brc, brz, brs,
-        bro, brnc, brnz, brns, brno, breq, brneq, brul, bruge, brule, brug, brsl, brsge, brsle,
-        brsg, bra, ldui, addpcui
+        negb, not, ld, ld8, ld8s, ld16, ld16s, io_in, st, st8, st16, io_out, jmp, link, brc, brz,
+        brs, bro, brnc, brnz, brns, brno, breq, brneq, brul, bruge, brule, brug, brsl, brsge,
+        brsle, brsg, bra, ldui, addpcui
     )(input)
 }
 
