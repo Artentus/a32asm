@@ -1244,6 +1244,10 @@ struct Args {
     /// Output format
     #[clap(short, long, arg_enum, value_parser, default_value_t = OutputFormat::Binary)]
     format: OutputFormat,
+
+    /// Base address
+    #[clap(short, long, value_parser, value_name = "ADDRESS")]
+    base: u32,
 }
 
 fn main() -> std::io::Result<()> {
@@ -1255,7 +1259,7 @@ fn main() -> std::io::Result<()> {
     let input_file = InputFile::new(args.input)?;
 
     match args.format {
-        OutputFormat::Binary => assemble(&input_file, &mut BinaryOutput::new(&output_path)?),
+        OutputFormat::Binary => assemble(&input_file, &mut BinaryOutput::new(&output_path, args.base)?),
         OutputFormat::Annotated => assemble(&input_file, &mut AnnotatedOutput::new(&output_path)?),
     }
 }

@@ -81,13 +81,15 @@ impl Output for TestOutput {
 
 pub struct BinaryOutput {
     file: File,
+    base_address: u32,
     current_address: u32,
 }
 impl BinaryOutput {
-    pub fn new(path: &Path) -> Result<Self> {
+    pub fn new(path: &Path, base_address: u32) -> Result<Self> {
         Ok(Self {
             file: File::create(path)?,
-            current_address: 0,
+            base_address,
+            current_address: base_address,
         })
     }
 }
@@ -97,25 +99,28 @@ impl Output for BinaryOutput {
     }
 
     fn set_address(&mut self, address: u32) -> Result<()> {
+        let relative_address = address.saturating_sub(self.base_address) as u64;
+
         let file_length = self.file.seek(SeekFrom::End(0))?;
-        if (address as u64) > file_length {
-            self.file.set_len(address as u64)?;
+        if relative_address > file_length {
+            self.file.set_len(relative_address)?;
         }
 
-        self.file.seek(SeekFrom::Start(address as u64))?;
+        self.file.seek(SeekFrom::Start(relative_address))?;
         self.current_address = address;
         Ok(())
     }
 
     fn align_address(&mut self, align: u32) -> Result<()> {
         let new_address = align_up(self.current_address, align);
+        let relative_address = new_address.saturating_sub(self.base_address) as u64;
 
         let file_length = self.file.seek(SeekFrom::End(0))?;
-        if (new_address as u64) > file_length {
-            self.file.set_len(new_address as u64)?;
+        if relative_address > file_length {
+            self.file.set_len(relative_address)?;
         }
 
-        self.file.seek(SeekFrom::Start(new_address as u64))?;
+        self.file.seek(SeekFrom::Start(relative_address))?;
         self.current_address = new_address;
         Ok(())
     }
