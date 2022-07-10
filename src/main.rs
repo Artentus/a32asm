@@ -1300,7 +1300,7 @@ struct Args {
     format: OutputFormat,
 
     /// Base address
-    #[clap(short, long, value_parser, value_name = "ADDRESS")]
+    #[clap(short, long, value_parser, value_name = "ADDRESS", default_value_t = 0)]
     base: u32,
 }
 
