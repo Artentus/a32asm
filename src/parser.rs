@@ -1289,6 +1289,8 @@ pub enum Instruction {
     Brk,
     Hlt,
     Err,
+    Sys,
+    ClrK,
 
     Add    { d: Register, l: Register, r: AluRhs },
     AddC   { d: Register, l: Register, r: AluRhs },
@@ -1322,6 +1324,9 @@ pub enum Instruction {
     Jmp  { s: Register, o: Expression, indirect: bool },
     Link { d: Register, o: Expression },
 
+    LdUi    { d: Register, ui: Expression },
+    AddPcUi { d: Register, ui: Expression },
+
     BrC   { d: Expression },
     BrZ   { d: Expression },
     BrS   { d: Expression },
@@ -1338,11 +1343,22 @@ pub enum Instruction {
     BrSG  { d: Expression },
     Bra   { d: Expression },
 
-    LdUi    { d: Register, ui: Expression },
-    AddPcUi { d: Register, ui: Expression },
-
-    Sys,
-    ClrK,
+    MvC   { d: Register, l: Register, r: AluRhs },
+    MvZ   { d: Register, l: Register, r: AluRhs },
+    MvS   { d: Register, l: Register, r: AluRhs },
+    MvO   { d: Register, l: Register, r: AluRhs },
+    MvNc  { d: Register, l: Register, r: AluRhs },
+    MvNz  { d: Register, l: Register, r: AluRhs },
+    MvNs  { d: Register, l: Register, r: AluRhs },
+    MvNo  { d: Register, l: Register, r: AluRhs },
+    MvULe { d: Register, l: Register, r: AluRhs },
+    MvUG  { d: Register, l: Register, r: AluRhs },
+    MvSL  { d: Register, l: Register, r: AluRhs },
+    MvSGe { d: Register, l: Register, r: AluRhs },
+    MvSLe { d: Register, l: Register, r: AluRhs },
+    MvSG  { d: Register, l: Register, r: AluRhs },
+    Mov   { d: Register, s: Register },
+    LdI   { d: Register, s: Expression },
 }
 impl Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1351,6 +1367,8 @@ impl Display for Instruction {
             Self::Brk => write!(f, "brk"),
             Self::Hlt => write!(f, "hlt"),
             Self::Err => write!(f, "err"),
+            Self::Sys => write!(f, "sys"),
+            Self::ClrK => write!(f, "clrk"),
             Self::Add { d, l, r } => write!(f, "add {}, {}, {}", d, l, r),
             Self::AddC { d, l, r } => write!(f, "addc {}, {}, {}", d, l, r),
             Self::Sub { d, l, r } => write!(f, "sub {}, {}, {}", d, l, r),
@@ -1385,6 +1403,8 @@ impl Display for Instruction {
                 }
             }
             Self::Link { d, o } => write!(f, "link {}, {}", d, o),
+            Self::LdUi { d, ui } => write!(f, "ldui {}, {}", d, ui),
+            Self::AddPcUi { d, ui } => write!(f, "addpcui {}, {}", d, ui),
             Self::BrC { d } => write!(f, "br.c {}", d),
             Self::BrZ { d } => write!(f, "br.z {}", d),
             Self::BrS { d } => write!(f, "br.s {}", d),
@@ -1400,10 +1420,22 @@ impl Display for Instruction {
             Self::BrSLe { d } => write!(f, "br.s.le {}", d),
             Self::BrSG { d } => write!(f, "br.s.g {}", d),
             Self::Bra { d } => write!(f, "bra {}", d),
-            Self::LdUi { d, ui } => write!(f, "ldui {}, {}", d, ui),
-            Self::AddPcUi { d, ui } => write!(f, "addpcui {}, {}", d, ui),
-            Self::Sys => write!(f, "sys"),
-            Self::ClrK => write!(f, "clrk"),
+            Self::MvC { d, l, r } => write!(f, "mv.c {}, {}, {}", d, l, r),
+            Self::MvZ { d, l, r } => write!(f, "mv.z {}, {}, {}", d, l, r),
+            Self::MvS { d, l, r } => write!(f, "mv.s {}, {}, {}", d, l, r),
+            Self::MvO { d, l, r } => write!(f, "mv.o {}, {}, {}", d, l, r),
+            Self::MvNc { d, l, r } => write!(f, "mv.nc {}, {}, {}", d, l, r),
+            Self::MvNz { d, l, r } => write!(f, "mv.nz {}, {}, {}", d, l, r),
+            Self::MvNs { d, l, r } => write!(f, "mv.ns {}, {}, {}", d, l, r),
+            Self::MvNo { d, l, r } => write!(f, "mv.no {}, {}, {}", d, l, r),
+            Self::MvULe { d, l, r } => write!(f, "mv.u.le {}, {}, {}", d, l, r),
+            Self::MvUG { d, l, r } => write!(f, "mv.u.g {}, {}, {}", d, l, r),
+            Self::MvSL { d, l, r } => write!(f, "mv.s.l {}, {}, {}", d, l, r),
+            Self::MvSGe { d, l, r } => write!(f, "mv.s.ge {}, {}, {}", d, l, r),
+            Self::MvSLe { d, l, r } => write!(f, "mv.s.le {}, {}, {}", d, l, r),
+            Self::MvSG { d, l, r } => write!(f, "mv.s.g {}, {}, {}", d, l, r),
+            Self::Mov { d, s } => write!(f, "mov {}, {}", d, s),
+            Self::LdI { d, s } => write!(f, "ldi {}, {}", d, s),
         }
     }
 }
@@ -1498,28 +1530,6 @@ macro_rules! alu2_inst {
 }
 
 alu2_inst!(slc, Slc);
-
-fn mov(input: TokenInput) -> ParseResult<Instruction> {
-    map(
-        parser!(keyword(Keyword::Mov), >>, inst_req_ws, >>, alu2_args),
-        |(d, s)| Instruction::Or {
-            d,
-            l: Register::ZERO,
-            r: AluRhs::Register(s),
-        },
-    )(input)
-}
-
-fn ldi(input: TokenInput) -> ParseResult<Instruction> {
-    map(
-        parser!(keyword(Keyword::LdI), >>, inst_req_ws, >>, alu2_imm_args),
-        |(d, imm)| Instruction::Or {
-            d,
-            l: Register::ZERO,
-            r: AluRhs::Immediate(imm),
-        },
-    )(input)
-}
 
 fn alu_no_store_args(input: TokenInput) -> ParseResult<(Register, AluRhs)> {
     parser!(inst_req_reg, <<, inst_req_comma, &, inst_req_alu_rhs)(input)
@@ -1703,6 +1713,20 @@ fn link(input: TokenInput) -> ParseResult<Instruction> {
     )(input)
 }
 
+macro_rules! ui_inst {
+    ($name:ident, $inst:ident) => {
+        fn $name(input: TokenInput) -> ParseResult<Instruction> {
+            map(
+                parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, inst_req_reg, <<, inst_req_comma, &, inst_req_expr),
+                |(d, ui)| Instruction::$inst { d, ui }
+            )(input)
+        }
+    };
+}
+
+ui_inst!(ldui, LdUi);
+ui_inst!(addpcui, AddPcUi);
+
 macro_rules! br_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
         fn $name(input: TokenInput) -> ParseResult<Instruction> {
@@ -1732,27 +1756,55 @@ br_inst!(brsle, BrSLe, BrSLe);
 br_inst!(brsg, BrSG, BrSG);
 br_inst!(bra, Bra, Bra);
 
-macro_rules! ui_inst {
-    ($name:ident, $inst:ident) => {
+macro_rules! mv_inst {
+    ($name:ident, $kw:ident, $inst:ident) => {
         fn $name(input: TokenInput) -> ParseResult<Instruction> {
-            map(
-                parser!(keyword(Keyword::$inst), >>, inst_req_ws, >>, inst_req_reg, <<, inst_req_comma, &, inst_req_expr),
-                |(d, ui)| Instruction::$inst { d, ui }
-            )(input)
+            map(parser!(keyword(Keyword::$kw), >>, inst_req_ws, >>, alu3_args), |(d, l, r)| Instruction::$inst { d, l, r })(input)
         }
     };
 }
 
-ui_inst!(ldui, LdUi);
-ui_inst!(addpcui, AddPcUi);
+mv_inst!(mvc, MvC, MvC);
+mv_inst!(mvz, MvZ, MvZ);
+mv_inst!(mvs, MvS, MvS);
+mv_inst!(mvo, MvO, MvO);
+mv_inst!(mvnc, MvNc, MvNc);
+mv_inst!(mvnz, MvNz, MvNz);
+mv_inst!(mvns, MvNs, MvNs);
+mv_inst!(mvno, MvNo, MvNo);
+mv_inst!(mveq, MvEq, MvZ);
+mv_inst!(mvneq, MvNeq, MvNz);
+mv_inst!(mvul, MvUL, MvNc);
+mv_inst!(mvuge, MvUGe, MvC);
+mv_inst!(mvule, MvULe, MvULe);
+mv_inst!(mvug, MvUG, MvUG);
+mv_inst!(mvsl, MvSL, MvSL);
+mv_inst!(mvsge, MvSGe, MvSGe);
+mv_inst!(mvsle, MvSLe, MvSLe);
+mv_inst!(mvsg, MvSG, MvSG);
+
+fn mov(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::Mov), >>, inst_req_ws, >>, alu2_args),
+        |(d, s)| Instruction::Mov { d, s },
+    )(input)
+}
+
+fn ldi(input: TokenInput) -> ParseResult<Instruction> {
+    map(
+        parser!(keyword(Keyword::LdI), >>, inst_req_ws, >>, alu2_imm_args),
+        |(d, s)| Instruction::LdI { d, s },
+    )(input)
+}
 
 fn inst(input: TokenInput) -> ParseResult<Instruction> {
     choice!(
         nop, brk, hlt, err, sys, clrk, add, addc, sub, subb, and, or, xor, shl, lsr, asr, mul,
-        mulhuu, mulhss, mulhsu, csub, slc, mov, ldi, cmp, bit, test, inc, incc, dec, decb, neg,
-        negb, not, ld, ld8, ld8s, ld16, ld16s, io_in, st, st8, st16, io_out, jmp, link, brc, brz,
-        brs, bro, brnc, brnz, brns, brno, breq, brneq, brul, bruge, brule, brug, brsl, brsge,
-        brsle, brsg, bra, ldui, addpcui
+        mulhuu, mulhss, mulhsu, csub, slc, cmp, bit, test, inc, incc, dec, decb, neg, negb, not,
+        ld, ld8, ld8s, ld16, ld16s, io_in, st, st8, st16, io_out, jmp, link, ldui, addpcui, brc,
+        brz, brs, bro, brnc, brnz, brns, brno, breq, brneq, brul, bruge, brule, brug, brsl, brsge,
+        brsle, brsg, bra, mvc, mvz, mvs, mvo, mvnc, mvnz, mvns, mvno, mveq, mvneq, mvul, mvuge,
+        mvule, mvug, mvsl, mvsge, mvsle, mvsg, mov, ldi
     )(input)
 }
 

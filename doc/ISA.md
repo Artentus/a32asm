@@ -52,10 +52,13 @@
 
 | Mnemonic + operands | Bit pattern                             | Affected flags | Operation |
 | ------------------- | --------------------------------------- | -------------- | --------- |
-| `NOP              ` | `----------_-----_-----_-----_--00_000` | `-           ` | -         |
-| `BRK              ` | `----------_-----_-----_-----_--01_000` | `-           ` | Pauses emulation (behaves like NOP in hardware) |
-| `HLT              ` | `----------_-----_-----_-----_--10_000` | `-           ` | Stops emulation gracefully (behaves like NOP in hardware) |
-| `ERR              ` | `----------_-----_-----_-----_--11_000` | `-           ` | Stops emulation with an error (behaves like NOP in hardware) |
+| `NOP              ` | `----------_-----_-----_-----_0-00_000` | `-           ` | -         |
+| `BRK              ` | `----------_-----_-----_-----_0-01_000` | `-           ` | Pauses emulation (behaves like NOP in hardware) |
+| `HLT              ` | `----------_-----_-----_-----_0-10_000` | `-           ` | Stops emulation gracefully (behaves like NOP in hardware) |
+| `ERR              ` | `----------_-----_-----_-----_0-11_000` | `-           ` | Stops emulation with an error (behaves like NOP in hardware) |
+| -                   |                                         |                |           |
+| `SYS              ` | `----------_-----_-----_-----_1--0_000` | `K           ` | `K = 1, pc = 0x00007FF0` |
+| `CLRK             ` | `----------_-----_-----_-----_1--1_000` | `K           ` | `K = 0` |
 | -                   |                                         |                |           |
 | `ADD     d, l, r  ` | `----------_rrrrr_lllll_ddddd_0000_001` | `C, Z, S, O  ` | `d = l + r` |
 | `ADDC    d, l, r  ` | `----------_rrrrr_lllll_ddddd_0001_001` | `C, Z, S, O  ` | `d = l + r + C` |
@@ -103,10 +106,13 @@
 | `ST16    [d, v], s` | `vvvvvvvvvv_vvvvv_sssss_ddddd_1-10_011` | `-           ` | `mem[d + v] = (i16)s` |
 | `OUT     [d, v], s` | `vvvvvvvvvv_vvvvv_sssss_ddddd_1-11_011` | `-           ` | `io[d + v] = s` |
 | -                   |                                         |                |           |
-| `JMP     s, v     ` | `vvvvvvvvvv_vvvvv_sssss_-----_0--0_100` | `-           ` | `pc = s + v` |
-| `JMP     [s, v]   ` | `vvvvvvvvvv_vvvvv_sssss_-----_0--1_100` | `-           ` | `pc = mem[s + v]` |
+| `JMP     s, v     ` | `vvvvvvvvvv_vvvvv_sssss_-----_00-0_100` | `-           ` | `pc = s + v` |
+| `JMP     [s, v]   ` | `vvvvvvvvvv_vvvvv_sssss_-----_00-1_100` | `-           ` | `pc = mem[s + v]` |
 | -                   |                                         |                |           |
-| `LINK    d, v     ` | `vvvvvvvvvv_vvvvv_-----_ddddd_1---_100` | `-           ` | `d = pc + v` |
+| `LINK    d, v     ` | `vvvvvvvvvv_vvvvv_-----_ddddd_01--_100` | `-           ` | `d = pc + v` |
+| -                   |                                         |                |           |
+| `LDUI    d, v     ` | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_10-0_100` | `-           ` | `d = v` |
+| `ADDPCUI d, v     ` | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_10-1_100` | `-           ` | `d = pc + v` |
 | -                   |                                         |                |           |
 | `BR.C    v        ` | `vvvvvvvvvv_vvvvv_vvvvv_-----_0001_101` | `-           ` | `if C then pc += v` |
 | `BR.Z    v        ` | `vvvvvvvvvv_vvvvv_vvvvv_-----_0010_101` | `-           ` | `if Z then pc += v` |
@@ -124,11 +130,37 @@
 | `BR.S.G  v        ` | `vvvvvvvvvv_vvvvv_vvvvv_-----_1110_101` | `-           ` | `if !Z && (S == O) then pc += v` |
 | `BRA     v        ` | `vvvvvvvvvv_vvvvv_vvvvv_-----_1111_101` | `-           ` | `pc += v` |
 | -                   |                                         |                |           |
-| `LDUI    d, v     ` | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_---0_110` | `-           ` | `d = v` |
-| `ADDPCUI d, v     ` | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_---1_110` | `-           ` | `d = pc + v` |
+| `MV.C    d, l, r  ` | `----------_rrrrr_lllll_ddddd_0001_110` | `-           ` | `if C then d = r else d = l` |
+| `MV.Z    d, l, r  ` | `----------_rrrrr_lllll_ddddd_0010_110` | `-           ` | `if Z then d = r else d = l` |
+| `MV.S    d, l, r  ` | `----------_rrrrr_lllll_ddddd_0011_110` | `-           ` | `if S then d = r else d = l` |
+| `MV.O    d, l, r  ` | `----------_rrrrr_lllll_ddddd_0100_110` | `-           ` | `if O then d = r else d = l` |
+| `MV.NC   d, l, r  ` | `----------_rrrrr_lllll_ddddd_0101_110` | `-           ` | `if !C then d = r else d = l` |
+| `MV.NZ   d, l, r  ` | `----------_rrrrr_lllll_ddddd_0110_110` | `-           ` | `if !Z then d = r else d = l` |
+| `MV.NS   d, l, r  ` | `----------_rrrrr_lllll_ddddd_0111_110` | `-           ` | `if !S then d = r else d = l` |
+| `MV.NO   d, l, r  ` | `----------_rrrrr_lllll_ddddd_1000_110` | `-           ` | `if !O then d = r else d = l` |
+| `MV.U.LE d, l, r  ` | `----------_rrrrr_lllll_ddddd_1001_110` | `-           ` | `if !C \|\| Z then d = r else d = l` |
+| `MV.U.G  d, l, r  ` | `----------_rrrrr_lllll_ddddd_1010_110` | `-           ` | `if C && !Z then d = r else d = l` |
+| `MV.S.L  d, l, r  ` | `----------_rrrrr_lllll_ddddd_1011_110` | `-           ` | `if S != O then d = r else d = l` |
+| `MV.S.GE d, l, r  ` | `----------_rrrrr_lllll_ddddd_1100_110` | `-           ` | `if S == O then d = r else d = l` |
+| `MV.S.LE d, l, r  ` | `----------_rrrrr_lllll_ddddd_1101_110` | `-           ` | `if Z \|\| (S != O) then d = r else d = l` |
+| `MV.S.G  d, l, r  ` | `----------_rrrrr_lllll_ddddd_1110_110` | `-           ` | `if !Z && (S == O) then d = r else d = l` |
+| `MOV     d, r     ` | `----------_rrrrr_-----_ddddd_1111_110` | `-           ` | `d = r` |
 | -                   |                                         |                |           |
-| `SYS              ` | `----------_-----_-----_-----_---0_111` | `K           ` | `K = 1, pc = 0x00007FF0` |
-| `CLRK             ` | `----------_-----_-----_-----_---1_111` | `K           ` | `K = 0` |
+| `MV.C    d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0001_111` | `-           ` | `if C then d = v else d = l` |
+| `MV.Z    d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0010_111` | `-           ` | `if Z then d = v else d = l` |
+| `MV.S    d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0011_111` | `-           ` | `if S then d = v else d = l` |
+| `MV.O    d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0100_111` | `-           ` | `if O then d = v else d = l` |
+| `MV.NC   d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0101_111` | `-           ` | `if !C then d = v else d = l` |
+| `MV.NZ   d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0110_111` | `-           ` | `if !Z then d = v else d = l` |
+| `MV.NS   d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_0111_111` | `-           ` | `if !S then d = v else d = l` |
+| `MV.NO   d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1000_111` | `-           ` | `if !O then d = v else d = l` |
+| `MV.U.LE d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1001_111` | `-           ` | `if !C \|\| Z then d = v else d = l` |
+| `MV.U.G  d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1010_111` | `-           ` | `if C && !Z then d = v else d = l` |
+| `MV.S.L  d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1011_111` | `-           ` | `if S != O then d = v else d = l` |
+| `MV.S.GE d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1100_111` | `-           ` | `if S == O then d = v else d = l` |
+| `MV.S.LE d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1101_111` | `-           ` | `if Z \|\| (S != O) then d = v else d = l` |
+| `MV.S.G  d, l, v  ` | `vvvvvvvvvv_vvvvv_lllll_ddddd_1110_111` | `-           ` | `if !Z && (S == O) then d = v else d = l` |
+| `LDI     d, v     ` | `vvvvvvvvvv_vvvvv_-----_ddddd_1111_111` | `-           ` | `d = v` |
 
 
 ## Immediate Encodings
@@ -140,9 +172,6 @@
 
 | Mnemonic + operands | Actual instruction emitted | Affected flags | Operation |
 | ------------------- | -------------------------- | -------------- | --------- |
-| `MOV     d, s     ` | `OR    d, zero, s        ` | `Z           ` | `d = s` |
-| `LDI     d, v     ` | `OR    d, zero, v        ` | `Z           ` | `d = v` |
-| -                   |                            |                |           |
 | `CMP     l, r     ` | `SUB   zero, l, r        ` | `C, Z, S, O  ` | `-` |
 | `CMP     l, v     ` | `SUB   zero, l, v        ` | `C, Z, S, O  ` | `-` |
 | -                   |                            |                |           |
@@ -192,3 +221,13 @@
 | `BR.NEQ  v        ` | `BR.NZ v                 ` | `-           ` | `if !Z then pc += v` |
 | `BR.U.L  v        ` | `BR.NC v                 ` | `-           ` | `if !C then pc += v` |
 | `BR.U.GE v        ` | `BR.C  v                 ` | `-           ` | `if C then pc += v` |
+| -                   |                            |                |           |
+| `MV.EQ   d, l, r  ` | `MV.Z  d, l, r           ` | `-           ` | `if Z then d = r else d = l` |
+| `MV.NEQ  d, l, r  ` | `MV.NZ d, l, r           ` | `-           ` | `if !Z then d = r else d = l` |
+| `MV.U.L  d, l, r  ` | `MV.NC d, l, r           ` | `-           ` | `if !C then d = r else d = l` |
+| `MV.U.GE d, l, r  ` | `MV.C  d, l, r           ` | `-           ` | `if C then d = r else d = l` |
+| -                   |                            |                |           |
+| `MV.EQ   d, l, v  ` | `MV.Z  d, l, v           ` | `-           ` | `if Z then d = v else d = l` |
+| `MV.NEQ  d, l, v  ` | `MV.NZ d, l, v           ` | `-           ` | `if !Z then d = v else d = l` |
+| `MV.U.L  d, l, v  ` | `MV.NC d, l, v           ` | `-           ` | `if !C then d = v else d = l` |
+| `MV.U.GE d, l, v  ` | `MV.C  d, l, v           ` | `-           ` | `if C then d = v else d = l` |

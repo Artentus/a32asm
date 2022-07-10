@@ -836,13 +836,41 @@ fn encode_link_instruction(
     let d_bin = d.0.into_inner() as u32;
     let o_bin = evaluate_folded(o, scope, constant_map, label_map)? as u32;
 
-    Ok((o_bin << 17) | (d_bin << 7) | (0b1000 << 3) | 0b100)
+    Ok((o_bin << 17) | (d_bin << 7) | (0b0100 << 3) | 0b100)
 }
 
 #[rustfmt::skip]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
-enum BranchKind {
+enum UpperImmediateKind {
+    Load  = 0x8,
+    AddPc = 0x9,
+}
+
+fn encode_upper_immediate_instruction(
+    kind: UpperImmediateKind,
+    d: Register,
+    ui: &Expression,
+    scope: &[&str],
+    constant_map: &AHashMap<SharedString, i64>,
+    label_map: &AHashMap<String, u32>,
+) -> Result<u32, Message> {
+    let kind_bin = (kind as u8) as u32;
+    let d_bin = d.0.into_inner() as u32;
+    let ui_bin = evaluate_folded(ui, scope, constant_map, label_map)? as u32;
+
+    Ok((ui_bin & 0x8000_0000)
+        | ((ui_bin & 0x3000) << 17)
+        | ((ui_bin & 0x7FFF_C000) >> 2)
+        | (d_bin << 7)
+        | (kind_bin << 3)
+        | 0b100)
+}
+
+#[rustfmt::skip]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum ConditionKind {
     Carry                = 0x1,
     Zero                 = 0x2,
     Sign                 = 0x3,
@@ -861,7 +889,7 @@ enum BranchKind {
 }
 
 fn encode_branch_instruction(
-    kind: BranchKind,
+    kind: ConditionKind,
     d: &Expression,
     scope: &[&str],
     constant_map: &AHashMap<SharedString, i64>,
@@ -904,32 +932,28 @@ fn encode_branch_instruction(
     }
 }
 
-#[rustfmt::skip]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-enum UpperImmediateKind {
-    Load  = 0x0,
-    AddPc = 0x1,
-}
-
-fn encode_upper_immediate_instruction(
-    kind: UpperImmediateKind,
+fn encode_move_instruction(
+    kind: ConditionKind,
     d: Register,
-    ui: &Expression,
+    l: Register,
+    r: &AluRhs,
     scope: &[&str],
     constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let kind_bin = (kind as u8) as u32;
     let d_bin = d.0.into_inner() as u32;
-    let ui_bin = evaluate_folded(ui, scope, constant_map, label_map)? as u32;
+    let l_bin = l.0.into_inner() as u32;
 
-    Ok((ui_bin & 0x8000_0000)
-        | ((ui_bin & 0x3000) << 17)
-        | ((ui_bin & 0x7FFF_C000) >> 2)
-        | (d_bin << 7)
-        | (kind_bin << 3)
-        | 0b110)
+    let (r_bin, grp_bin) = match r {
+        AluRhs::Register(r) => (r.0.into_inner() as u32, 0b110),
+        AluRhs::Immediate(r) => (
+            evaluate_folded(r, scope, constant_map, label_map)? as u32,
+            0b111,
+        ),
+    };
+
+    Ok((r_bin << 17) | (l_bin << 12) | (d_bin << 7) | (kind_bin << 3) | grp_bin)
 }
 
 fn encode_instruction(
@@ -970,20 +994,6 @@ fn encode_instruction(
         };
     }
 
-    macro_rules! br {
-        ($cond:ident, $d:expr) => {
-            encode_branch_instruction(
-                BranchKind::$cond,
-                $d,
-                scope,
-                constant_map,
-                label_map,
-                current_address,
-                warnings,
-            )
-        };
-    }
-
     macro_rules! ui {
         ($op:ident, $d:expr, $ui:expr) => {
             encode_upper_immediate_instruction(
@@ -997,11 +1007,41 @@ fn encode_instruction(
         };
     }
 
+    macro_rules! br {
+        ($cond:ident, $d:expr) => {
+            encode_branch_instruction(
+                ConditionKind::$cond,
+                $d,
+                scope,
+                constant_map,
+                label_map,
+                current_address,
+                warnings,
+            )
+        };
+    }
+
+    macro_rules! mv {
+        ($cond:ident, $d:expr, $l: expr, $r: expr) => {
+            encode_move_instruction(
+                ConditionKind::$cond,
+                *$d,
+                *$l,
+                $r,
+                scope,
+                constant_map,
+                label_map,
+            )
+        };
+    }
+
     match inst {
         Instruction::Nop => Ok((0x0 << 3) | 0b000),
         Instruction::Brk => Ok((0x1 << 3) | 0b000),
         Instruction::Hlt => Ok((0x2 << 3) | 0b000),
         Instruction::Err => Ok((0x3 << 3) | 0b000),
+        Instruction::Sys => Ok((0x8 << 3) | 0b000),
+        Instruction::ClrK => Ok((0x9 << 3) | 0b000),
         Instruction::Add { d, l, r } => alu!(Add, d, l, r),
         Instruction::AddC { d, l, r } => alu!(AddC, d, l, r),
         Instruction::Sub { d, l, r } => alu!(Sub, d, l, r),
@@ -1034,6 +1074,8 @@ fn encode_instruction(
         Instruction::Link { d, o } => {
             encode_link_instruction(*d, o, scope, constant_map, label_map)
         }
+        Instruction::LdUi { d, ui } => ui!(Load, d, ui),
+        Instruction::AddPcUi { d, ui } => ui!(AddPc, d, ui),
         Instruction::BrC { d } => br!(Carry, d),
         Instruction::BrZ { d } => br!(Zero, d),
         Instruction::BrS { d } => br!(Sign, d),
@@ -1049,10 +1091,22 @@ fn encode_instruction(
         Instruction::BrSLe { d } => br!(SignedLessOrEqual, d),
         Instruction::BrSG { d } => br!(SignedGreater, d),
         Instruction::Bra { d } => br!(Always, d),
-        Instruction::LdUi { d, ui } => ui!(Load, d, ui),
-        Instruction::AddPcUi { d, ui } => ui!(AddPc, d, ui),
-        Instruction::Sys => Ok((0x0 << 3) | 0b111),
-        Instruction::ClrK => Ok((0x1 << 3) | 0b111),
+        Instruction::MvC { d, l, r } => mv!(Carry, d, l, r),
+        Instruction::MvZ { d, l, r } => mv!(Zero, d, l, r),
+        Instruction::MvS { d, l, r } => mv!(Sign, d, l, r),
+        Instruction::MvO { d, l, r } => mv!(Overflow, d, l, r),
+        Instruction::MvNc { d, l, r } => mv!(NotCarry, d, l, r),
+        Instruction::MvNz { d, l, r } => mv!(NotZero, d, l, r),
+        Instruction::MvNs { d, l, r } => mv!(NotSign, d, l, r),
+        Instruction::MvNo { d, l, r } => mv!(NotOverflow, d, l, r),
+        Instruction::MvULe { d, l, r } => mv!(UnsignedLessOrEqual, d, l, r),
+        Instruction::MvUG { d, l, r } => mv!(UnsignedGreater, d, l, r),
+        Instruction::MvSL { d, l, r } => mv!(SignedLess, d, l, r),
+        Instruction::MvSGe { d, l, r } => mv!(SignedGreaterOrEqual, d, l, r),
+        Instruction::MvSLe { d, l, r } => mv!(SignedLessOrEqual, d, l, r),
+        Instruction::MvSG { d, l, r } => mv!(SignedGreater, d, l, r),
+        Instruction::Mov { d, s } => mv!(Always, d, &Register::ZERO, &AluRhs::Register(*s)),
+        Instruction::LdI { d, s } => mv!(Always, d, &Register::ZERO, &AluRhs::Immediate(s.clone())),
     }
 }
 
@@ -1259,7 +1313,10 @@ fn main() -> std::io::Result<()> {
     let input_file = InputFile::new(args.input)?;
 
     match args.format {
-        OutputFormat::Binary => assemble(&input_file, &mut BinaryOutput::new(&output_path, args.base)?),
+        OutputFormat::Binary => assemble(
+            &input_file,
+            &mut BinaryOutput::new(&output_path, args.base)?,
+        ),
         OutputFormat::Annotated => assemble(&input_file, &mut AnnotatedOutput::new(&output_path)?),
     }
 }
@@ -1328,7 +1385,15 @@ fn assembles_alu_imm_overflow_negative_instruction() {
 
 #[test]
 fn assembles_link_instruction() {
-    test_assembly("link r13, 8", &[0b_000000000001000_00000_01101_1000_100]);
+    test_assembly("link r12, 8", &[0b_000000000001000_00000_01100_0100_100]);
+}
+
+#[test]
+fn assembles_ldui_instruction() {
+    test_assembly(
+        "ldui r13, 1_755_879_355",
+        &[0b_0_01_11010001010100010_01101_1000_100],
+    );
 }
 
 #[test]
@@ -1348,9 +1413,11 @@ fn assembles_branch_negative_instruction() {
 }
 
 #[test]
-fn assembles_ldui_instruction() {
-    test_assembly(
-        "ldui r12, 1_755_879_355",
-        &[0b_0_01_11010001010100010_01100_0000_110],
-    );
+fn assembles_move_instruction() {
+    test_assembly("mov r14, r15", &[0b_0000000000_01111_00000_01110_1111_110]);
+}
+
+#[test]
+fn assembles_ldi_instruction() {
+    test_assembly("ldi r16, 1", &[0b_0000000000_00001_00000_10000_1111_111]);
 }

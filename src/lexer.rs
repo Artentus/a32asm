@@ -297,6 +297,8 @@ pub enum Keyword {
     Brk,
     Hlt,
     Err,
+    Sys,
+    ClrK,
 
     Add,
     AddC,
@@ -315,8 +317,6 @@ pub enum Keyword {
     CSub,
     Slc,
 
-    Mov,
-    LdI,
     Cmp,
     Bit,
     Test,
@@ -342,6 +342,8 @@ pub enum Keyword {
 
     Jmp,
     Link,
+    LdUi,
+    AddPcUi,
 
     BrC,
     BrZ,
@@ -363,11 +365,26 @@ pub enum Keyword {
     BrSG,
     Bra,
 
-    LdUi,
-    AddPcUi,
-
-    Sys,
-    ClrK,
+    MvC,
+    MvZ,
+    MvS,
+    MvO,
+    MvNc,
+    MvNz,
+    MvNs,
+    MvNo,
+    MvEq,
+    MvNeq,
+    MvUL,
+    MvUGe,
+    MvULe,
+    MvUG,
+    MvSL,
+    MvSGe,
+    MvSLe,
+    MvSG,
+    Mov,
+    LdI,
 }
 
 #[rustfmt::skip]
@@ -376,6 +393,8 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
     ("brk"    , Keyword::Brk    ),
     ("hlt"    , Keyword::Hlt    ),
     ("err"    , Keyword::Err    ),
+    ("sys"    , Keyword::Sys    ),
+    ("clrk"   , Keyword::ClrK   ),
 
     ("add"    , Keyword::Add    ),
     ("addc"   , Keyword::AddC   ),
@@ -394,8 +413,6 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
     ("csub"   , Keyword::CSub   ),
     ("slc"    , Keyword::Slc    ),
 
-    ("mov"    , Keyword::Mov    ),
-    ("ldi"    , Keyword::LdI    ),
     ("cmp"    , Keyword::Cmp    ),
     ("bit"    , Keyword::Bit    ),
     ("test"   , Keyword::Test   ),
@@ -421,6 +438,8 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
 
     ("jmp"    , Keyword::Jmp    ),
     ("link"   , Keyword::Link   ),
+    ("ldui"   , Keyword::LdUi   ),
+    ("addpcui", Keyword::AddPcUi),
 
     ("br.c"   , Keyword::BrC    ),
     ("br.z"   , Keyword::BrZ    ),
@@ -442,11 +461,26 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
     ("br.s.g" , Keyword::BrSG   ),
     ("bra"    , Keyword::Bra    ),
 
-    ("ldui"   , Keyword::LdUi   ),
-    ("addpcui", Keyword::AddPcUi),
-
-    ("sys"    , Keyword::Sys    ),
-    ("clrk"   , Keyword::ClrK   ),
+    ("mv.c"   , Keyword::MvC    ),
+    ("mv.z"   , Keyword::MvZ    ),
+    ("mv.s"   , Keyword::MvS    ),
+    ("mv.o"   , Keyword::MvO    ),
+    ("mv.nc"  , Keyword::MvNc   ),
+    ("mv.nz"  , Keyword::MvNz   ),
+    ("mv.ns"  , Keyword::MvNs   ),
+    ("mv.no"  , Keyword::MvNo   ),
+    ("mv.eq"  , Keyword::MvEq   ),
+    ("mv.neq" , Keyword::MvNeq  ),
+    ("mv.u.l" , Keyword::MvUL   ),
+    ("mv.u.ge", Keyword::MvUGe  ),
+    ("mv.u.le", Keyword::MvULe  ),
+    ("mv.u.g" , Keyword::MvUG   ),
+    ("mv.s.l" , Keyword::MvSL   ),
+    ("mv.s.ge", Keyword::MvSGe  ),
+    ("mv.s.le", Keyword::MvSLe  ),
+    ("mv.s.g" , Keyword::MvSG   ),
+    ("mov"    , Keyword::Mov    ),
+    ("ldi"    , Keyword::LdI    ),
 ];
 
 #[rustfmt::skip]
