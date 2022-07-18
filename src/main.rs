@@ -1090,7 +1090,7 @@ fn encode_instruction(
         Instruction::BrSGe { d } => br!(SignedGreaterOrEqual, d),
         Instruction::BrSLe { d } => br!(SignedLessOrEqual, d),
         Instruction::BrSG { d } => br!(SignedGreater, d),
-        Instruction::Bra { d } => br!(Always, d),
+        Instruction::Jr { d } => br!(Always, d),
         Instruction::MvC { d, l, r } => mv!(Carry, d, l, r),
         Instruction::MvZ { d, l, r } => mv!(Zero, d, l, r),
         Instruction::MvS { d, l, r } => mv!(Sign, d, l, r),
@@ -1399,7 +1399,7 @@ fn assembles_ldui_instruction() {
 #[test]
 fn assembles_branch_instruction() {
     test_assembly(
-        "bra target\nnop\ntarget:",
+        "jr target\nnop\ntarget:",
         &[0b_0_000000000010_0000000_00000_1111_101, 0],
     );
 }
@@ -1407,7 +1407,7 @@ fn assembles_branch_instruction() {
 #[test]
 fn assembles_branch_negative_instruction() {
     test_assembly(
-        "target:\nnop\nbra target",
+        "target:\nnop\njr target",
         &[0, 0b_1_111111111111_1111111_00000_1111_101],
     );
 }

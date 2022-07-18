@@ -363,7 +363,7 @@ pub enum Keyword {
     BrSGe,
     BrSLe,
     BrSG,
-    Bra,
+    Jr,
 
     MvC,
     MvZ,
@@ -459,7 +459,7 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
     ("br.s.ge", Keyword::BrSGe  ),
     ("br.s.le", Keyword::BrSLe  ),
     ("br.s.g" , Keyword::BrSG   ),
-    ("bra"    , Keyword::Bra    ),
+    ("jr"     , Keyword::Jr     ),
 
     ("mv.c"   , Keyword::MvC    ),
     ("mv.z"   , Keyword::MvZ    ),

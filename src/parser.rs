@@ -1341,7 +1341,7 @@ pub enum Instruction {
     BrSGe { d: Expression },
     BrSLe { d: Expression },
     BrSG  { d: Expression },
-    Bra   { d: Expression },
+    Jr    { d: Expression },
 
     MvC   { d: Register, l: Register, r: AluRhs },
     MvZ   { d: Register, l: Register, r: AluRhs },
@@ -1419,7 +1419,7 @@ impl Display for Instruction {
             Self::BrSGe { d } => write!(f, "br.s.ge {}", d),
             Self::BrSLe { d } => write!(f, "br.s.le {}", d),
             Self::BrSG { d } => write!(f, "br.s.g {}", d),
-            Self::Bra { d } => write!(f, "bra {}", d),
+            Self::Jr { d } => write!(f, "jr {}", d),
             Self::MvC { d, l, r } => write!(f, "mv.c {}, {}, {}", d, l, r),
             Self::MvZ { d, l, r } => write!(f, "mv.z {}, {}, {}", d, l, r),
             Self::MvS { d, l, r } => write!(f, "mv.s {}, {}, {}", d, l, r),
@@ -1754,7 +1754,7 @@ br_inst!(brsl, BrSL, BrSL);
 br_inst!(brsge, BrSGe, BrSGe);
 br_inst!(brsle, BrSLe, BrSLe);
 br_inst!(brsg, BrSG, BrSG);
-br_inst!(bra, Bra, Bra);
+br_inst!(jr, Jr, Jr);
 
 macro_rules! mv_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
@@ -1803,7 +1803,7 @@ fn inst(input: TokenInput) -> ParseResult<Instruction> {
         mulhuu, mulhss, mulhsu, csub, slc, cmp, bit, test, inc, incc, dec, decb, neg, negb, not,
         ld, ld8, ld8s, ld16, ld16s, io_in, st, st8, st16, io_out, jmp, link, ldui, addpcui, brc,
         brz, brs, bro, brnc, brnz, brns, brno, breq, brneq, brul, bruge, brule, brug, brsl, brsge,
-        brsle, brsg, bra, mvc, mvz, mvs, mvo, mvnc, mvnz, mvns, mvno, mveq, mvneq, mvul, mvuge,
+        brsle, brsg, jr, mvc, mvz, mvs, mvo, mvnc, mvnz, mvns, mvno, mveq, mvneq, mvul, mvuge,
         mvule, mvug, mvsl, mvsge, mvsle, mvsg, mov, ldi
     )(input)
 }
