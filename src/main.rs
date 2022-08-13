@@ -3,10 +3,15 @@
 #![feature(pattern)]
 #![feature(try_trait_v2)]
 #![feature(int_roundings)]
+#![feature(maybe_uninit_uninit_array)]
+#![feature(maybe_uninit_slice)]
+#![feature(trait_alias)]
 
 #[macro_use]
 mod int;
 use int::*;
+
+mod iter;
 
 mod lexer;
 use lexer::*;
@@ -19,6 +24,7 @@ use output::*;
 
 use ahash::AHashMap;
 use clap::{AppSettings, ArgEnum, Parser};
+use langbox::*;
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::io::Write;
@@ -160,18 +166,29 @@ pub struct Message {
     pub text: Cow<'static, str>,
 }
 impl Message {
-    pub fn pretty_print<W: WriteColor + Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    pub fn pretty_print<W: WriteColor + Write>(
+        &self,
+        writer: &mut W,
+        file_server: &FileServer,
+    ) -> std::io::Result<()> {
         writer.reset()?;
         writeln!(writer)?;
 
-        let full_span = self.span.combine(&self.token_span);
-        let full_lines = full_span.enclosing_lines();
-        let lines = self.span.split_into_lines();
+        let file_text = file_server
+            .get_file(self.span.file_id())
+            .expect("invalid file")
+            .text();
 
-        let mut line_number_width = 1;
-        for line_span in full_lines.iter() {
-            line_number_width = line_number_width.max(format!("{}", line_span.line() + 1).len());
-        }
+        let full_span = self.span.join(&self.token_span);
+        let full_start_line = full_span.start_pos().line();
+        let full_end_line = full_span.end_pos().line();
+        let start_line = self.token_span.start_pos().line();
+        let end_line = self.token_span.end_pos().line();
+
+        let file_lines = file_text.lines().collect::<Vec<_>>();
+        let full_lines = &file_lines[full_start_line..=full_end_line];
+
+        let line_number_width = format!("{}", full_end_line + 1).len();
 
         let kind_color = match self.kind {
             MessageKind::Error => Color::Red,
@@ -192,38 +209,41 @@ impl Message {
         writeln!(
             writer,
             "{}:{}:{}",
-            self.span.file_path().display(),
-            self.span.line() + 1,
-            self.span.column() + 1,
+            file_server
+                .get_file(self.span.start_pos().file_id())
+                .expect("invalid file")
+                .path()
+                .display(),
+            self.span.start_pos().line() + 1,
+            self.span.start_pos().column() + 1,
         )?;
 
         writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
         writeln!(writer, "{0:w$} | ", "", w = line_number_width)?;
 
-        let mut line_iter = lines.iter();
-        for line_span in full_lines.iter() {
+        for (i, full_line) in full_lines.iter().copied().enumerate() {
             writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
-            write!(writer, "{} | ", line_span.line() + 1)?;
+            write!(writer, "{} | ", i + full_start_line + 1)?;
 
             writer.set_color(ColorSpec::new().set_bold(false).set_fg(Some(Color::White)))?;
-            writeln!(writer, "{}", line_span.text())?;
+            writeln!(writer, "{}", full_line)?;
 
-            if line_span.line() >= lines[0].line() {
-                if let Some(span) = line_iter.next() {
-                    writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
-                    write!(writer, "{0:w$} | ", "", w = line_number_width)?;
+            if ((i + full_start_line) >= start_line) && ((i + full_start_line) <= end_line) {
+                writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
+                write!(writer, "{0:w$} | ", "", w = line_number_width)?;
 
-                    writer
-                        .set_color(ColorSpec::new().set_bold(false).set_fg(Some(Color::White)))?;
-                    write!(writer, "{0:w$}", "", w = span.column())?;
-
-                    writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(kind_color)))?;
-                    writeln!(
-                        writer,
-                        "{0:^<w$}",
-                        "",
-                        w = span.text().chars().count().max(1),
-                    )?;
+                writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(kind_color)))?;
+                if (i + full_start_line) == start_line {
+                    let column = self.token_span.start_pos().column();
+                    let char_count = full_line.chars().count();
+                    write!(writer, "{0:w$}", "", w = column)?;
+                    writeln!(writer, "{0:^<w$}", "", w = (char_count - column).max(1))?;
+                } else if (i + full_start_line) == end_line {
+                    let char_count = full_line.chars().count();
+                    writeln!(writer, "{0:^<w$}", "", w = char_count.max(1))?;
+                } else {
+                    let column = self.token_span.start_pos().column();
+                    writeln!(writer, "{0:^<w$}", "", w = column.max(1))?;
                 }
             }
         }
@@ -491,8 +511,8 @@ fn evaluate(
             } else {
                 let msg = Message {
                     kind: MessageKind::Error,
-                    token_span: expr.span().unwrap().clone(),
-                    span: expr.span().unwrap().clone(),
+                    token_span: expr.span(),
+                    span: expr.span(),
                     text: format!("label `{}` is not defined", name).into(),
                 };
 
@@ -505,8 +525,8 @@ fn evaluate(
             } else {
                 let msg = Message {
                     kind: MessageKind::Error,
-                    token_span: expr.span().unwrap().clone(),
-                    span: expr.span().unwrap().clone(),
+                    token_span: expr.span(),
+                    span: expr.span(),
                     text: format!("constant `{}` is not defined", name).into(),
                 };
 
@@ -550,8 +570,8 @@ fn evaluate_folded(
             } else {
                 let msg = Message {
                     kind: MessageKind::Error,
-                    token_span: expr.span().unwrap().clone(),
-                    span: expr.span().unwrap().clone(),
+                    token_span: expr.span(),
+                    span: expr.span(),
                     text: format!("label `{}` is not defined", name).into(),
                 };
 
@@ -564,8 +584,8 @@ fn evaluate_folded(
             } else {
                 let msg = Message {
                     kind: MessageKind::Error,
-                    token_span: expr.span().unwrap().clone(),
-                    span: expr.span().unwrap().clone(),
+                    token_span: expr.span(),
+                    span: expr.span(),
                     text: format!("constant `{}` is not defined", name).into(),
                 };
 
@@ -603,27 +623,41 @@ fn fold_constants(
 }
 
 fn tokenize_file<W: WriteColor + Write>(
-    file: &Rc<InputFile>,
+    file: FileId,
+    file_server: &FileServer,
     writer: &mut W,
-) -> std::io::Result<(Vec<Token>, Vec<usize>, bool)> {
+) -> std::io::Result<(Vec<Token<TokenKind>>, Vec<usize>, bool)> {
     let mut tokens = Vec::new();
     let mut line_bounds = Vec::new();
     let mut has_error = false;
 
-    let lexer = Lexer::new(&file);
+    let lexer =
+        Lexer::<lexer::TokenReader, whitespace_mode::RemoveKeepNewLine>::new(file, file_server);
+
     for token in lexer {
-        match token {
-            Ok(token) => match &token.kind() {
-                TokenKind::NewLine | TokenKind::Comment { has_new_line: true } => {
-                    line_bounds.push(tokens.len());
-                }
-                _ => tokens.push(token),
-            },
-            Err(err) => {
+        let span = token.span;
+
+        match token.kind {
+            TokenKind::Error {
+                message,
+                hint_message,
+                dummy,
+            } => {
                 has_error = true;
-                err.pretty_print(writer)?;
-                tokens.push(err.into_dummy_token());
+                message.pretty_print(writer, file, file_server, MessageKind::Error)?;
+
+                if let Some(hint_message) = hint_message {
+                    hint_message.pretty_print(writer, file, file_server, MessageKind::Hint)?;
+                }
+
+                if let Some(dummy) = dummy {
+                    tokens.push(Token { kind: *dummy, span });
+                }
             }
+            TokenKind::NewLine | TokenKind::Comment { has_new_line: true } => {
+                line_bounds.push(tokens.len());
+            }
+            kind => tokens.push(Token { kind, span }),
         }
     }
 
@@ -680,6 +714,7 @@ macro_rules! def_int_to_bytes {
     ($name:ident, $t:ty) => {
         fn $name<W: WriteColor + Write>(
             writer: &mut W,
+            file_server: &FileServer,
             vals: &[Expression],
             scope: &[&str],
             constant_map: &AHashMap<SharedString, i64>,
@@ -691,7 +726,7 @@ macro_rules! def_int_to_bytes {
                 let val = match evaluate_folded(expr, scope, constant_map, label_map) {
                     Ok(val) => val as $t,
                     Err(msg) => {
-                        msg.pretty_print(writer)?;
+                        msg.pretty_print(writer, file_server)?;
                         0
                     }
                 };
@@ -724,11 +759,6 @@ enum AluOp {
     Lsr    = 0x8,
     Asr    = 0x9,
     Mul    = 0xA,
-    MulHuu = 0xB,
-    MulHss = 0xC,
-    MulHsu = 0xD,
-    CSub   = 0xE,
-    Slc    = 0xF,
 }
 
 fn encode_alu_instruction(
@@ -808,7 +838,7 @@ fn encode_store_instruction(
     let s_bin = s.0.into_inner() as u32;
     let o_bin = evaluate_folded(o, scope, constant_map, label_map)? as u32;
 
-    Ok((o_bin << 17) | (s_bin << 12) | (d_bin << 7) | (kind_bin << 3) | 0b011)
+    Ok((o_bin << 17) | (d_bin << 12) | (s_bin << 7) | (kind_bin << 3) | 0b011)
 }
 
 fn encode_jump_instruction(
@@ -903,8 +933,8 @@ fn encode_branch_instruction(
     if (d_bin & 0x3) != 0 {
         let msg = Message {
             kind: MessageKind::Error,
-            token_span: d.span().unwrap().clone(),
-            span: d.span().unwrap().clone(),
+            token_span: d.span(),
+            span: d.span(),
             text: "branch is not aligned, actual target address will be truncated".into(),
         };
 
@@ -923,8 +953,8 @@ fn encode_branch_instruction(
     } else {
         let msg = Message {
             kind: MessageKind::Error,
-            token_span: d.span().unwrap().clone(),
-            span: d.span().unwrap().clone(),
+            token_span: d.span(),
+            span: d.span(),
             text: "branch is out of range".into(),
         };
 
@@ -1053,11 +1083,6 @@ fn encode_instruction(
         Instruction::Lsr { d, l, r } => alu!(Lsr, d, l, r),
         Instruction::Asr { d, l, r } => alu!(Asr, d, l, r),
         Instruction::Mul { d, l, r } => alu!(Mul, d, l, r),
-        Instruction::MulHuu { d, l, r } => alu!(MulHuu, d, l, r),
-        Instruction::MulHss { d, l, r } => alu!(MulHss, d, l, r),
-        Instruction::MulHsu { d, l, r } => alu!(MulHsu, d, l, r),
-        Instruction::CSub { d, l, r } => alu!(CSub, d, l, r),
-        Instruction::Slc { d, s } => alu!(Slc, d, s, &AluRhs::Register(Register::ZERO)),
         Instruction::Ld { d, s, o } => ld!(Ld, d, s, o),
         Instruction::Ld8 { d, s, o } => ld!(Ld8, d, s, o),
         Instruction::Ld8s { d, s, o } => ld!(Ld8s, d, s, o),
@@ -1111,12 +1136,13 @@ fn encode_instruction(
 }
 
 fn parse_file<W: WriteColor + Write>(
-    file: &Rc<InputFile>,
+    file: FileId,
+    file_server: &mut FileServer,
     lines: &mut Vec<Line>,
     line_start: &mut usize,
     writer: &mut W,
 ) -> std::io::Result<bool> {
-    let (tokens, line_bounds, mut has_error) = tokenize_file(&file, writer)?;
+    let (tokens, line_bounds, mut has_error) = tokenize_file(file, file_server, writer)?;
 
     for line_end in line_bounds {
         if line_end > *line_start {
@@ -1124,8 +1150,7 @@ fn parse_file<W: WriteColor + Write>(
 
             let mut is_ws = true;
             for token in line.iter() {
-                match token.kind() {
-                    TokenKind::Whitespace => {}
+                match &token.kind {
                     TokenKind::Comment { .. } => {}
                     _ => is_ws = false,
                 }
@@ -1136,16 +1161,23 @@ fn parse_file<W: WriteColor + Write>(
                     Ok(line) => {
                         if let LineKind::Directive(AssemblerDirective::Include(path)) = line.kind()
                         {
-                            let current_dir = file.path().parent().expect("invalid file path");
-                            let include_file = InputFile::new(current_dir.join(path.as_ref()))?;
-                            has_error |= parse_file(&include_file, lines, line_start, writer)?;
+                            let current_dir = file_server
+                                .get_file(file)
+                                .unwrap()
+                                .path()
+                                .parent()
+                                .expect("invalid file path");
+                            let include_file =
+                                file_server.register_file(current_dir.join(path.as_ref()))?;
+                            has_error |=
+                                parse_file(include_file, file_server, lines, line_start, writer)?;
                         } else {
                             lines.push(line);
                         }
                     }
                     Err(err) => {
                         has_error = true;
-                        err.pretty_print(writer)?;
+                        err.pretty_print(writer, file_server)?;
                     }
                 }
             }
@@ -1157,7 +1189,11 @@ fn parse_file<W: WriteColor + Write>(
     Ok(has_error)
 }
 
-fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<()> {
+fn assemble(
+    file: FileId,
+    file_server: &mut FileServer,
+    output: &mut dyn Output,
+) -> std::io::Result<()> {
     use termcolor::*;
 
     let stdout = StandardStream::stdout(ColorChoice::Auto);
@@ -1165,7 +1201,7 @@ fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<(
 
     let mut lines = Vec::new();
     let mut line_start = 0;
-    let has_error = parse_file(input, &mut lines, &mut line_start, &mut stdout)?;
+    let has_error = parse_file(file, file_server, &mut lines, &mut line_start, &mut stdout)?;
 
     if !has_error {
         match associate_label_addresses(&lines) {
@@ -1179,13 +1215,18 @@ fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<(
                             ($to_bytes:expr, $vals:expr) => {{
                                 let bytes = $to_bytes(
                                     &mut stdout,
+                                    file_server,
                                     $vals,
                                     &scope_stack,
                                     &constant_map,
                                     &label_map,
                                 )?;
 
-                                output.write_data(&bytes, line.number(), line.span().text())?
+                                output.write_data(
+                                    &bytes,
+                                    line.number(),
+                                    line.span().text(file_server),
+                                )?
                             }};
                         }
 
@@ -1208,27 +1249,27 @@ fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<(
                                 AssemblerDirective::Ascii(s) => output.write_data(
                                     &to_ascii_bytes(s, false),
                                     line.number(),
-                                    line.span().text(),
+                                    line.span().text(file_server),
                                 )?,
                                 AssemblerDirective::AsciiZ(s) => output.write_data(
                                     &to_ascii_bytes(s, true),
                                     line.number(),
-                                    line.span().text(),
+                                    line.span().text(file_server),
                                 )?,
                                 AssemblerDirective::Utf8(s) => output.write_data(
                                     s.as_bytes(),
                                     line.number(),
-                                    line.span().text(),
+                                    line.span().text(file_server),
                                 )?,
                                 AssemblerDirective::Utf16(s) => output.write_data(
                                     &to_utf16_bytes(s),
                                     line.number(),
-                                    line.span().text(),
+                                    line.span().text(file_server),
                                 )?,
                                 AssemblerDirective::Unicode(s) => output.write_data(
                                     &to_unicode_bytes(s),
                                     line.number(),
-                                    line.span().text(),
+                                    line.span().text(file_server),
                                 )?,
                                 _ => {}
                             },
@@ -1246,16 +1287,16 @@ fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<(
                                         output.write_instruction(
                                             word,
                                             line.number(),
-                                            line.span().text(),
+                                            line.span().text(file_server),
                                         )?;
                                     }
                                     Err(msg) => {
-                                        msg.pretty_print(&mut stdout)?;
+                                        msg.pretty_print(&mut stdout, file_server)?;
 
                                         output.write_instruction(
                                             (0x3 << 3) | 0b000u32,
                                             line.number(),
-                                            line.span().text(),
+                                            line.span().text(file_server),
                                         )?;
                                     }
                                 }
@@ -1265,12 +1306,12 @@ fn assemble(input: &Rc<InputFile>, output: &mut dyn Output) -> std::io::Result<(
                     }
 
                     for msg in warnings.into_iter() {
-                        msg.pretty_print(&mut stdout)?;
+                        msg.pretty_print(&mut stdout, file_server)?;
                     }
                 }
-                Err(msg) => msg.pretty_print(&mut stdout)?,
+                Err(msg) => msg.pretty_print(&mut stdout, file_server)?,
             },
-            Err(msg) => msg.pretty_print(&mut stdout)?,
+            Err(msg) => msg.pretty_print(&mut stdout, file_server)?,
         }
     }
 
@@ -1310,14 +1351,21 @@ fn main() -> std::io::Result<()> {
     let output_path = args
         .output
         .unwrap_or_else(|| args.input.with_extension("bin"));
-    let input_file = InputFile::new(args.input)?;
+
+    let mut file_server = FileServer::new();
+    let input_file = file_server.register_file(args.input)?;
 
     match args.format {
         OutputFormat::Binary => assemble(
-            &input_file,
+            input_file,
+            &mut file_server,
             &mut BinaryOutput::new(&output_path, args.base)?,
         ),
-        OutputFormat::Annotated => assemble(&input_file, &mut AnnotatedOutput::new(&output_path)?),
+        OutputFormat::Annotated => assemble(
+            input_file,
+            &mut file_server,
+            &mut AnnotatedOutput::new(&output_path)?,
+        ),
     }
 }
 
@@ -1332,9 +1380,11 @@ fn to_bytes(words: &[u32]) -> Vec<u8> {
 
 #[cfg(test)]
 fn test_assembly(input: &'static str, expected_output: &[u32]) {
-    let input_file = InputFile::new_from_memory("test", input);
+    let mut file_server = FileServer::new();
+    let input_file = file_server.register_file_memory("<test>", input);
+
     let mut output = TestOutput::new();
-    assemble(&input_file, &mut output).unwrap();
+    assemble(input_file, &mut file_server, &mut output).unwrap();
 
     let output = output.into_inner();
     let expected_output = to_bytes(expected_output);
@@ -1370,8 +1420,8 @@ fn assembles_alu_imm_negative_instruction() {
 #[test]
 fn assembles_alu_imm_overflow_instruction() {
     test_assembly(
-        "csub r8, r9, 1_131_619_459",
-        &[0b_010010010000011_01001_01000_1110_010],
+        "or r8, r9, 1_131_619_459",
+        &[0b_010010010000011_01001_01000_0101_010],
     );
 }
 

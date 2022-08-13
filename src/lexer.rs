@@ -1,201 +1,113 @@
-use crate::{Message, MessageKind, OptionalResult, Register, SharedString};
+use crate::iter::*;
+use crate::{Register, SharedString};
 use std::borrow::Cow;
+use std::io::Write;
 use std::iter::Peekable;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::str::pattern::Pattern;
 use std::str::CharIndices;
+use termcolor::{Color, ColorSpec, WriteColor};
 
-pub struct InputFile {
-    path: PathBuf,
-    text: Cow<'static, str>,
+#[derive(Debug, Clone)]
+pub struct ErrorTokenMessage {
+    pub message: Cow<'static, str>,
+    pub byte_offset: usize,
+    pub byte_len: usize,
 }
-impl InputFile {
-    pub fn new(path: PathBuf) -> std::io::Result<Rc<Self>> {
-        let text = std::fs::read_to_string(&path)?;
 
-        Ok(Rc::new(Self {
-            path,
-            text: text.into(),
-        }))
-    }
-
-    #[cfg(test)]
-    pub fn new_from_memory<T: Into<Cow<'static, str>>>(name: &str, text: T) -> Rc<Self> {
-        Rc::new(Self {
-            path: name.into(),
-            text: text.into(),
-        })
-    }
-
+impl ErrorTokenMessage {
     #[inline]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-#[derive(Clone)]
-pub struct TextSpan {
-    file: Rc<InputFile>,
-    line: usize,
-    column: usize,
-    byte_start: usize,
-    byte_end: usize,
-}
-impl TextSpan {
-    #[inline]
-    fn new(
-        file: &Rc<InputFile>,
-        line: usize,
-        column: usize,
-        byte_start: usize,
-        byte_end: usize,
-    ) -> Self {
-        assert!(byte_start <= byte_end);
-        assert!(byte_end <= file.text.len());
-
+    fn new<S: Into<Cow<'static, str>>>(message: S, byte_offset: usize, byte_len: usize) -> Self {
         Self {
-            file: Rc::clone(file),
-            line,
-            column,
-            byte_start,
-            byte_end,
+            message: message.into(),
+            byte_offset,
+            byte_len,
         }
     }
 
-    #[inline]
-    pub fn file_path(&self) -> &Path {
-        &self.file.path
+    fn get_line_columns<'a>(&self, text: &'a str) -> (usize, &'a str, usize, usize) {
+        let before = &text[..self.byte_offset];
+        let after = &text[(self.byte_offset + self.byte_len)..];
+
+        let line_number = before.chars().filter(|c| *c == '\n').count();
+        let line_start = before.rfind('\n').unwrap_or(0);
+        let line_end = after.find('\n').unwrap_or(after.len()) + self.byte_offset + self.byte_len;
+        let line = &text[line_start..line_end];
+
+        let start_column = text[line_start..self.byte_offset].chars().count();
+        let end_column = text[(self.byte_offset + self.byte_len)..line_end]
+            .chars()
+            .count()
+            + start_column;
+
+        (line_number, line, start_column, end_column)
     }
 
-    #[inline]
-    pub fn line(&self) -> usize {
-        self.line
-    }
+    pub fn pretty_print<W: WriteColor + Write>(
+        &self,
+        writer: &mut W,
+        file: langbox::FileId,
+        file_server: &langbox::FileServer,
+        kind: crate::MessageKind,
+    ) -> std::io::Result<()> {
+        writer.reset()?;
+        writeln!(writer)?;
 
-    #[inline]
-    pub fn column(&self) -> usize {
-        self.column
-    }
+        let file_text = file_server.get_file(file).expect("invalid file").text();
+        let (line_number, line, start_column, end_column) = self.get_line_columns(file_text);
+        let line_number = line_number + 1;
+        let line_number_width = format!("{}", line_number).len();
 
-    #[inline]
-    pub fn text(&self) -> &str {
-        &self.file.text[self.byte_start..self.byte_end]
-    }
-
-    pub fn split_into_lines(&self) -> Vec<Self> {
-        use line_span::*;
-        let mut result = Vec::new();
-
-        let mut byte_start = self.byte_start;
-        let mut line_offset = 0;
-        let mut column = self.column;
-        loop {
-            let byte_end = find_line_end(&self.file.text, byte_start);
-            result.push(Self::new(
-                &self.file,
-                self.line + line_offset,
-                column,
-                byte_start,
-                byte_end.min(self.byte_end),
-            ));
-
-            if byte_end < self.byte_end {
-                if let Some(next_start) = find_next_line_start(&self.file.text, byte_end) {
-                    if next_start >= self.byte_end {
-                        break;
-                    } else {
-                        byte_start = next_start;
-                        line_offset += 1;
-                        column = 0;
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        result
-    }
-
-    pub fn enclosing_lines(&self) -> Vec<Self> {
-        use line_span::*;
-        let mut result = Vec::new();
-
-        let mut byte_start = find_line_start(&self.file.text, self.byte_start);
-        let mut line_offset = 0;
-        loop {
-            let byte_end = find_line_end(&self.file.text, byte_start);
-            result.push(Self::new(
-                &self.file,
-                self.line + line_offset,
-                0,
-                byte_start,
-                byte_end,
-            ));
-
-            if byte_end < self.byte_end {
-                if let Some(next_start) = find_next_line_start(&self.file.text, byte_end) {
-                    if next_start >= self.byte_end {
-                        break;
-                    } else {
-                        byte_start = next_start;
-                        line_offset += 1;
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        result
-    }
-
-    pub fn subspan(&self, column_offset: usize, char_count: usize, byte_offset: usize) -> Self {
-        let byte_start = self.byte_start + byte_offset;
-
-        let mut iter = self.file.text[byte_start..self.byte_end].char_indices();
-        let (byte_len, _) = iter.nth(char_count).expect("Out of parent range");
-
-        Self::new(
-            &self.file,
-            self.line,
-            self.column + column_offset,
-            byte_start,
-            byte_start + byte_len,
-        )
-    }
-
-    pub fn combine(&self, other: &Self) -> Self {
-        let start_span = if self.byte_start < other.byte_start {
-            self
-        } else {
-            other
+        let kind_color = match kind {
+            crate::MessageKind::Error => Color::Red,
+            crate::MessageKind::Hint => Color::Blue,
+            crate::MessageKind::Warning => Color::Yellow,
         };
 
-        Self::new(
-            &self.file,
-            start_span.line,
-            start_span.column,
-            start_span.byte_start,
-            self.byte_end.max(other.byte_end),
-        )
-    }
-}
-impl std::fmt::Debug for TextSpan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}:{}:{} \"{}\"",
-            self.file_path().display(),
-            self.line(),
-            self.column(),
-            self.text()
-        )
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(kind_color)))?;
+        write!(writer, "{:?}", kind)?;
+
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::White)))?;
+        writeln!(writer, ": {}", &self.message)?;
+
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
+        write!(writer, "{0:w$}--> ", "", w = line_number_width)?;
+
+        writer.set_color(ColorSpec::new().set_bold(false).set_fg(Some(Color::White)))?;
+        writeln!(
+            writer,
+            "{}:{}:{}",
+            file_server
+                .get_file(file)
+                .expect("invalid file")
+                .path()
+                .display(),
+            line_number,
+            start_column,
+        )?;
+
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
+        writeln!(writer, "{0:w$} | ", "", w = line_number_width)?;
+
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
+        write!(writer, "{} | ", line_number)?;
+
+        writer.set_color(ColorSpec::new().set_bold(false).set_fg(Some(Color::White)))?;
+        writeln!(writer, "{}", line)?;
+
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
+        write!(writer, "{0:w$} | ", "", w = line_number_width)?;
+
+        writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(kind_color)))?;
+        write!(writer, "{0:w$}", "", w = start_column)?;
+        writeln!(
+            writer,
+            "{0:^<w$}",
+            "",
+            w = (end_column - start_column).max(1)
+        )?;
+
+        writer.reset()?;
+        writeln!(writer)?;
+        Ok(())
     }
 }
 
@@ -556,11 +468,17 @@ const REGISTER_MAP: &[(&str, Register)] = &[
     ("s12", Register::S12),
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum TokenKind {
+    Error {
+        message: ErrorTokenMessage,
+        hint_message: Option<ErrorTokenMessage>,
+        dummy: Option<Box<TokenKind>>,
+    },
     NewLine,
-    Whitespace,
-    Comment { has_new_line: bool },
+    Comment {
+        has_new_line: bool,
+    },
     Operator(Operator),
     IntegerLiteral(i64),
     CharLiteral(char),
@@ -570,1003 +488,654 @@ pub enum TokenKind {
     Keyword(Keyword),
     Identifier(SharedString),
 }
+
 impl TokenKind {
     #[inline]
-    fn dummy_integer() -> Self {
-        Self::IntegerLiteral(0)
+    fn dummy_integer() -> Box<Self> {
+        Box::new(Self::IntegerLiteral(0))
     }
 
     #[inline]
-    fn dummy_char() -> Self {
-        Self::CharLiteral('\0')
+    fn dummy_char() -> Box<Self> {
+        Box::new(Self::CharLiteral('\0'))
     }
 
     #[inline]
-    fn dummy_string() -> Self {
-        Self::StringLiteral("".into())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Token {
-    span: TextSpan,
-    kind: TokenKind,
-}
-impl Token {
-    #[inline]
-    pub fn span(&self) -> &TextSpan {
-        &self.span
+    fn dummy_string() -> Box<Self> {
+        Box::new(Self::StringLiteral("".into()))
     }
 
     #[inline]
-    pub fn kind(&self) -> &TokenKind {
-        &self.kind
+    fn dummy_identifier() -> Box<Self> {
+        Box::new(Self::Identifier("".into()))
     }
 }
 
-#[derive(Debug)]
-pub struct LexerError {
-    dummy_token: Token,
-    error_message: Message,
-    hint_message: Option<Message>,
-}
-impl LexerError {
-    fn new<S>(dummy_token: Token, error_span: TextSpan, error_text: S) -> Self
-    where
-        S: Into<Cow<'static, str>>,
-    {
-        let error_message = Message {
-            kind: MessageKind::Error,
-            token_span: dummy_token.span().clone(),
-            span: error_span,
-            text: error_text.into(),
-        };
-
-        Self {
-            dummy_token,
-            error_message,
-            hint_message: None,
+impl PartialEq for TokenKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Error { .. }, _) => false,
+            (_, Self::Error { .. }) => false,
+            (
+                Self::Comment {
+                    has_new_line: l_has_new_line,
+                },
+                Self::Comment {
+                    has_new_line: r_has_new_line,
+                },
+            ) => l_has_new_line == r_has_new_line,
+            (Self::Operator(l0), Self::Operator(r0)) => l0 == r0,
+            (Self::IntegerLiteral(l0), Self::IntegerLiteral(r0)) => l0 == r0,
+            (Self::CharLiteral(l0), Self::CharLiteral(r0)) => l0 == r0,
+            (Self::StringLiteral(l0), Self::StringLiteral(r0)) => l0 == r0,
+            (Self::Directive(l0), Self::Directive(r0)) => l0 == r0,
+            (Self::Register(l0), Self::Register(r0)) => l0 == r0,
+            (Self::Keyword(l0), Self::Keyword(r0)) => l0 == r0,
+            (Self::Identifier(l0), Self::Identifier(r0)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
     }
-
-    fn new_with_hint<S1, S2>(
-        dummy_token: Token,
-        error_span: TextSpan,
-        error_text: S1,
-        hint_span: TextSpan,
-        hint_text: S2,
-    ) -> Self
-    where
-        S1: Into<Cow<'static, str>>,
-        S2: Into<Cow<'static, str>>,
-    {
-        let error_message = Message {
-            kind: MessageKind::Error,
-            token_span: dummy_token.span().clone(),
-            span: error_span,
-            text: error_text.into(),
-        };
-
-        let hint_message = Message {
-            kind: MessageKind::Hint,
-            token_span: dummy_token.span().clone(),
-            span: hint_span,
-            text: hint_text.into(),
-        };
-
-        Self {
-            dummy_token,
-            error_message,
-            hint_message: Some(hint_message),
-        }
-    }
-
-    #[inline]
-    pub fn into_dummy_token(self) -> Token {
-        self.dummy_token
-    }
-
-    pub fn pretty_print<W: termcolor::WriteColor + std::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> std::io::Result<()> {
-        self.error_message.pretty_print(writer)?;
-
-        if let Some(hint_message) = &self.hint_message {
-            hint_message.pretty_print(writer)?;
-        }
-
-        Ok(())
-    }
 }
 
-pub type LexerResult = OptionalResult<Token, LexerError>;
+fn parse_integer(s: &str) -> TokenKind {
+    let mut iter = s.char_indices().peekable();
+    let (_, first) = iter.next().expect("s should contain at least one char");
 
-fn is_whitespace(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\r')
-}
+    let mut result_str = String::new();
+    let radix;
+    if first == '0' {
+        if let Some((_, prefix)) = iter.peek() {
+            result_str.reserve_exact(s.len());
 
-fn is_bin_digit(c: char) -> bool {
-    matches!(c, '0' | '1')
-}
-
-fn is_oct_digit(c: char) -> bool {
-    matches!(c, '0'..='7')
-}
-
-fn is_dec_digit(c: char) -> bool {
-    matches!(c, '0'..='9')
-}
-
-fn is_hex_digit(c: char) -> bool {
-    matches!(c, '0'..='9' | 'a'..='f' | 'A'..='F')
-}
-
-fn is_ident_char(c: char) -> bool {
-    c.is_alphanumeric() | (c == '_') | (c == '.')
-}
-
-struct TextInput {
-    file: Rc<InputFile>,
-    next_byte_pos: usize,
-    next_line: usize,
-    next_column: usize,
-}
-impl TextInput {
-    fn new(file: &Rc<InputFile>) -> Self {
-        Self {
-            file: Rc::clone(file),
-            next_byte_pos: 0,
-            next_line: 0,
-            next_column: 0,
-        }
-    }
-
-    #[inline]
-    fn file(&self) -> &Rc<InputFile> {
-        &self.file
-    }
-
-    #[inline]
-    fn next_byte_pos(&self) -> usize {
-        self.next_byte_pos
-    }
-
-    #[inline]
-    fn next_line(&self) -> usize {
-        self.next_line
-    }
-
-    #[inline]
-    fn next_column(&self) -> usize {
-        self.next_column
-    }
-
-    #[inline]
-    fn remaining(&self) -> &str {
-        &self.file.text[self.next_byte_pos..]
-    }
-
-    fn peek_char(&mut self) -> Option<char> {
-        self.remaining().chars().next()
-    }
-
-    fn starts_with<'a, P: Pattern<'a>>(&'a self, pat: P) -> bool {
-        self.remaining().starts_with(pat)
-    }
-
-    fn next_char(&mut self) -> Option<char> {
-        let mut iter = self.remaining().char_indices();
-
-        if let Some((_, c)) = iter.next() {
-            self.next_byte_pos = if let Some((i, _)) = iter.next() {
-                self.next_byte_pos + i
-            } else {
-                self.file.text.len()
-            };
-
-            if c == '\n' {
-                self.next_line += 1;
-                self.next_column = 0;
-            } else {
-                self.next_column += 1;
+            match prefix {
+                'b' | 'B' => {
+                    iter.next();
+                    radix = 2;
+                }
+                'o' | 'O' => {
+                    iter.next();
+                    radix = 8;
+                }
+                'x' | 'X' => {
+                    iter.next();
+                    radix = 16;
+                }
+                _ => {
+                    result_str.push(first);
+                    radix = 10;
+                }
             }
+        } else {
+            return TokenKind::IntegerLiteral(0);
+        }
+    } else {
+        result_str.reserve_exact(s.len());
+        result_str.push(first);
+        radix = 10;
+    }
 
-            Some(c)
+    for (p, c) in iter {
+        if c == '_' {
+            // do nothing
+        } else if c.is_digit(radix) {
+            result_str.push(c);
+        } else {
+            return TokenKind::Error {
+                message: ErrorTokenMessage::new("illegal character in literal", 0, s.len()),
+                hint_message: Some(ErrorTokenMessage::new(
+                    "this character is not valid in the literal",
+                    p,
+                    c.len_utf8(),
+                )),
+                dummy: Some(TokenKind::dummy_integer()),
+            };
+        }
+    }
+
+    TokenKind::IntegerLiteral(
+        i64::from_str_radix(&result_str, radix)
+            .expect("result_str should only contain valid digits"),
+    )
+}
+
+fn parse_hex_escape<const N: usize>(
+    iter: &mut Peekable<CharIndices>,
+    esc_pos: usize,
+    hex_pos: usize,
+    kind_string: &str,
+    count_string: &str,
+) -> Result<char, (ErrorTokenMessage, Option<ErrorTokenMessage>)>
+where
+    [(); N * 4]: Sized,
+{
+    let digits = iter.map(|(_, c)| c).next_n::<N>();
+    let digit_count = digits.len();
+    let digit_str: ValueString<{ N * 4 }> = digits.into();
+
+    if digit_count == N {
+        if let Ok(code) = u32::from_str_radix(&digit_str, 16) {
+            char::from_u32(code).ok_or_else(|| {
+                let msg = ErrorTokenMessage::new(
+                    "invalid escape sequence",
+                    esc_pos,
+                    hex_pos + digit_str.len(),
+                );
+                let hint_msg = ErrorTokenMessage::new(
+                    format!("`{:X}` is not a valid codepoint", code),
+                    hex_pos,
+                    hex_pos + digit_str.len(),
+                );
+
+                (msg, Some(hint_msg))
+            })
+        } else {
+            let msg = ErrorTokenMessage::new(
+                "invalid escape sequence",
+                esc_pos,
+                hex_pos + digit_str.len(),
+            );
+            let hint_msg = ErrorTokenMessage::new(
+                "some characters are not valid hexadecimal digits",
+                hex_pos,
+                hex_pos + digit_str.len(),
+            );
+
+            Err((msg, Some(hint_msg)))
+        }
+    } else {
+        let msg = ErrorTokenMessage::new(
+            "incomplete escape sequence",
+            esc_pos,
+            hex_pos + digit_str.len(),
+        );
+        let hint_msg = ErrorTokenMessage::new(
+            format!(
+                "{} escape sequence must contain exactly {} hex digits",
+                kind_string, count_string
+            ),
+            hex_pos,
+            hex_pos + digit_str.len(),
+        );
+
+        Err((msg, Some(hint_msg)))
+    }
+}
+
+fn unescape_string(s: &str) -> Result<String, (ErrorTokenMessage, Option<ErrorTokenMessage>)> {
+    let mut iter = s.char_indices().peekable();
+    let mut result_str = String::with_capacity(s.len());
+
+    while let Some((p, c)) = iter.next() {
+        if c == '\\' {
+            let (next_p, next_c) = iter.next().expect("escape sequence invariant broken");
+
+            match next_c {
+                '0' => {
+                    result_str.push('\0');
+                }
+                'n' => {
+                    result_str.push('\n');
+                }
+                'r' => {
+                    result_str.push('\r');
+                }
+                't' => {
+                    result_str.push('\t');
+                }
+                '\\' => {
+                    result_str.push('\\');
+                }
+                '\'' => {
+                    result_str.push('\'');
+                }
+                '\"' => {
+                    result_str.push('\"');
+                }
+                'x' => {
+                    let c = parse_hex_escape::<2>(
+                        &mut iter,
+                        p,
+                        next_p + 'x'.len_utf8(),
+                        "an ascii",
+                        "two",
+                    )?;
+
+                    result_str.push(c);
+                }
+                'u' => {
+                    let c = parse_hex_escape::<4>(
+                        &mut iter,
+                        p,
+                        next_p + 'u'.len_utf8(),
+                        "a unicode",
+                        "four",
+                    )?;
+
+                    result_str.push(c);
+                }
+                _ => {
+                    let msg = ErrorTokenMessage::new(
+                        "invalid escape sequence",
+                        p,
+                        c.len_utf8() + next_c.len_utf8(),
+                    );
+
+                    let hint_msg = ErrorTokenMessage::new(
+                        "valid escape sequences are `\\0`, `\\n`, `\\r`, `\\t`, `\\\\`, `\\'`, `\\\"`, `\\xXX` and `\\uUUUU`",
+                        next_p,
+                        next_c.len_utf8()
+                    );
+
+                    return Err((msg, Some(hint_msg)));
+                }
+            }
+        } else {
+            result_str.push(c);
+        }
+    }
+
+    Ok(result_str)
+}
+
+pub type ReadTokenResult = langbox::ReadTokenResult<TokenKind>;
+
+pub enum TokenReader {}
+
+impl TokenReader {
+    fn count_while(text: &str, mut predicate: impl FnMut(char) -> bool) -> usize {
+        let mut count = text.len();
+        for (p, c) in text.char_indices() {
+            if !predicate(c) {
+                count = p;
+                break;
+            }
+        }
+        count
+    }
+
+    fn count_while_escaped(text: &str, predicate: impl Fn(char) -> bool) -> usize {
+        let mut prev = None;
+        Self::count_while(text, |c| {
+            if let Some('\\') = prev {
+                prev = None;
+                true
+            } else {
+                prev = Some(c);
+                predicate(c)
+            }
+        })
+    }
+
+    fn read_new_line(text: &str) -> Option<ReadTokenResult> {
+        if let Some('\n') = text.chars().next() {
+            Some(ReadTokenResult {
+                token: TokenKind::NewLine,
+                consumed_bytes: '\n'.len_utf8(),
+            })
         } else {
             None
         }
     }
 
-    fn advance_by(&mut self, bytes: usize) {
-        let mut iter = self.file.text[self.next_byte_pos..].char_indices();
-
-        while let Some((p, c)) = iter.next() {
-            assert!(p <= bytes);
-
-            if p == bytes {
-                break;
-            }
-
-            if c == '\n' {
-                self.next_line += 1;
-                self.next_column = 0;
-            } else {
-                self.next_column += 1;
-            }
-        }
-
-        self.next_byte_pos += bytes;
-    }
-
-    fn advance_while(
-        &mut self,
-        mut predicate: impl FnMut(char) -> bool,
-        mut output: Option<&mut String>,
-    ) -> usize {
-        let mut iter = self.file.text[self.next_byte_pos..]
-            .char_indices()
-            .peekable();
-        let mut count = 0;
-
-        while let Some((i, c)) = iter.peek().copied() {
-            if predicate(c) {
-                if let Some(output) = &mut output {
-                    output.push(c);
-                }
-
-                if c == '\n' {
-                    self.next_line += 1;
-                    self.next_column = 0;
-                } else {
-                    self.next_column += 1;
-                }
-
-                iter.next();
-                count += 1;
-            } else {
-                self.next_byte_pos += i;
-                return count;
-            }
-        }
-
-        self.next_byte_pos = self.file.text.len();
-        count
-    }
-}
-
-fn next_n<I: Iterator>(iter: &mut I, n: usize, map: impl Fn(I::Item) -> char) -> Option<String> {
-    let mut result = String::with_capacity(n);
-
-    for _ in 0..n {
-        if let Some(c) = iter.next() {
-            result.push(map(c));
+    fn read_line_comment(text: &str) -> Option<ReadTokenResult> {
+        if text.starts_with("//") {
+            Some(ReadTokenResult {
+                token: TokenKind::Comment {
+                    has_new_line: false,
+                },
+                consumed_bytes: Self::count_while(text, |c| c != '\n'),
+            })
         } else {
-            return None;
+            None
         }
     }
 
-    Some(result)
-}
+    fn read_block_comment(text: &str) -> Option<ReadTokenResult> {
+        if text.starts_with("/*") {
+            let mut pos = "/*".len();
 
-fn parse_hex_escape(
-    text: &str,
-    iter: &mut Peekable<CharIndices>,
-    s: &mut String,
-    line: usize,
-    column: usize,
-    p: usize,
-    span: &TextSpan,
-    n: usize,
-    kind_string: &str,
-    count_string: &str,
-    dummy_token: Token,
-) -> Result<(), LexerError> {
-    if let Some(digits) = next_n(iter, n, |(_, c)| c) {
-        let end_p = iter.peek().map(|(ep, _)| *ep).unwrap_or(text.len());
-
-        if let Ok(code) = u32::from_str_radix(&digits, 16) {
-            if let Some(c) = char::from_u32(code) {
-                s.push(c);
-                Ok(())
-            } else {
-                let token_span = TextSpan::new(&span.file, line, column, p, end_p);
-
-                let hint_span = TextSpan::new(&span.file, line, column + 2, p + 2, end_p);
-
-                let err = LexerError::new_with_hint(
-                    dummy_token,
-                    token_span,
-                    "invalid escape sequence",
-                    hint_span,
-                    format!("`{:X}` is not a valid codepoint", code),
-                );
-
-                Err(err)
-            }
-        } else {
-            let token_span = TextSpan::new(&span.file, line, column, p, end_p);
-
-            let hint_span = TextSpan::new(&span.file, line, column + 2, p + 2, end_p);
-
-            let err = LexerError::new_with_hint(
-                dummy_token,
-                token_span,
-                "invalid escape sequence",
-                hint_span,
-                "some characters are not valid hexadecimal digits",
-            );
-
-            Err(err)
-        }
-    } else {
-        let end_p = iter.peek().map(|(ep, _)| *ep).unwrap_or(text.len());
-
-        let token_span = TextSpan::new(&span.file, line, column, p, end_p);
-
-        let err = LexerError::new_with_hint(
-            dummy_token,
-            token_span.clone(),
-            "incomplete escape sequence",
-            token_span,
-            format!(
-                "{} escape sequence must contain exactly {} hex digits",
-                kind_string, count_string
-            ),
-        );
-
-        Err(err)
-    }
-}
-
-pub struct Lexer {
-    input: TextInput,
-    current_byte_pos: usize,
-    current_line: usize,
-    current_column: usize,
-}
-impl Lexer {
-    pub fn new(file: &Rc<InputFile>) -> Self {
-        Self {
-            input: TextInput::new(file),
-            current_byte_pos: 0,
-            current_line: 0,
-            current_column: 0,
-        }
-    }
-
-    fn span(&self) -> TextSpan {
-        TextSpan::new(
-            self.input.file(),
-            self.current_line,
-            self.current_column,
-            self.current_byte_pos,
-            self.input.next_byte_pos(),
-        )
-    }
-
-    #[inline]
-    fn get_token(&self, kind: TokenKind) -> Token {
-        Token {
-            span: self.span(),
-            kind,
-        }
-    }
-
-    fn next_new_line(&mut self) -> LexerResult {
-        if let Some(c) = self.input.peek_char() {
-            if c == '\n' {
-                self.input.next_char();
-                LexerResult::Some(self.get_token(TokenKind::NewLine))
-            } else {
-                LexerResult::None
-            }
-        } else {
-            LexerResult::None
-        }
-    }
-
-    fn next_whitespace(&mut self) -> LexerResult {
-        let count = self.input.advance_while(is_whitespace, None);
-        if count > 0 {
-            LexerResult::Some(self.get_token(TokenKind::Whitespace))
-        } else {
-            LexerResult::None
-        }
-    }
-
-    fn next_line_comment(&mut self) -> LexerResult {
-        if self.input.starts_with("//") {
-            self.input.advance_while(|c| c != '\n', None);
-            LexerResult::Some(self.get_token(TokenKind::Comment {
-                has_new_line: false,
-            }))
-        } else {
-            LexerResult::None
-        }
-    }
-
-    fn next_block_comment(&mut self) -> LexerResult {
-        if self.input.starts_with("/*") {
             loop {
-                self.input.advance_while(|c| c != '*', None);
-                self.input.advance_while(|c| c == '*', None);
+                pos += Self::count_while(&text[pos..], |c| c != '*');
+                pos += Self::count_while(&text[pos..], |c| c == '*');
 
-                if let Some(c) = self.input.peek_char() {
+                if let Some(c) = text[pos..].chars().next() {
                     if c == '/' {
-                        self.input.next_char();
+                        pos += '/'.len_utf8();
                         break;
                     }
                 } else {
-                    let hint_span = self.span();
+                    let dummy = TokenKind::Comment {
+                        has_new_line: text[..pos].contains('\n'),
+                    };
 
-                    let error_span = TextSpan::new(
-                        &hint_span.file,
-                        self.input.next_line(),
-                        self.input.next_column(),
-                        self.input.file.text.len(),
-                        self.input.file.text.len(),
-                    );
-
-                    let err = LexerError::new_with_hint(
-                        self.get_token(TokenKind::Comment {
-                            has_new_line: self.current_line != self.input.next_line(),
-                        }),
-                        error_span,
-                        "open block comment",
-                        hint_span,
-                        "block comments need to be closed with `*/`",
-                    );
-
-                    return LexerResult::Err(err);
+                    return Some(ReadTokenResult {
+                        token: TokenKind::Error {
+                            message: ErrorTokenMessage::new("open block comment", pos, 0),
+                            hint_message: Some(ErrorTokenMessage::new(
+                                "block comments need to be closed with `*/`",
+                                0,
+                                pos,
+                            )),
+                            dummy: Some(Box::new(dummy)),
+                        },
+                        consumed_bytes: pos,
+                    });
                 }
             }
 
-            LexerResult::Some(self.get_token(TokenKind::Comment {
-                has_new_line: self.current_line != self.input.next_line(),
-            }))
+            Some(ReadTokenResult {
+                token: TokenKind::Comment {
+                    has_new_line: text[..pos].contains('\n'),
+                },
+                consumed_bytes: pos,
+            })
         } else {
-            LexerResult::None
+            None
         }
     }
 
-    fn next_operator(&mut self) -> LexerResult {
-        for (ops, op) in OPERATOR_MAP.iter().copied() {
-            if self.input.starts_with(&ops) {
-                self.input.advance_by(ops.len());
-
-                return LexerResult::Some(self.get_token(TokenKind::Operator(op)));
+    fn read_operator(text: &str) -> Option<ReadTokenResult> {
+        for (op_str, op) in OPERATOR_MAP.iter().copied() {
+            if text.starts_with(&op_str) {
+                return Some(ReadTokenResult {
+                    token: TokenKind::Operator(op),
+                    consumed_bytes: op_str.len(),
+                });
             }
         }
 
-        LexerResult::None
+        None
     }
 
-    fn parse_integer(&mut self, span: TextSpan) -> Result<i64, LexerError> {
-        let mut s = String::with_capacity(span.text().len());
-        let mut iter = span.text().char_indices().peekable();
-        let (_, first) = iter.next().unwrap();
-
-        let is_valid: fn(char) -> bool;
-
-        let radix;
-        let mut column_offset = 0;
-        if first == '0' {
-            if let Some((_, prefix)) = iter.peek() {
-                match prefix {
-                    'b' | 'B' => {
-                        iter.next();
-                        radix = 2;
-                        column_offset = 2;
-                        is_valid = is_bin_digit;
-                    }
-                    'o' | 'O' => {
-                        iter.next();
-                        radix = 8;
-                        column_offset = 2;
-                        is_valid = is_oct_digit;
-                    }
-                    'x' | 'X' => {
-                        iter.next();
-                        radix = 16;
-                        column_offset = 2;
-                        is_valid = is_hex_digit;
-                    }
-                    _ => {
-                        s.push(first);
-                        radix = 10;
-                        is_valid = is_dec_digit;
-                    }
-                }
-            } else {
-                return Ok(0);
-            }
-        } else {
-            s.push(first);
-            radix = 10;
-            is_valid = is_dec_digit;
-        }
-
-        for (p, c) in iter {
-            if c != '_' {
-                if is_valid(c) {
-                    s.push(c);
-                } else {
-                    let hint_span = span.subspan(column_offset, 1, p);
-
-                    let err = LexerError::new_with_hint(
-                        self.get_token(TokenKind::dummy_integer()),
-                        span,
-                        "illegal character in literal",
-                        hint_span,
-                        "this character is not valid in the literal",
-                    );
-
-                    return Err(err);
-                }
-            }
-
-            column_offset += 1;
-        }
-
-        Ok(i64::from_str_radix(&s, radix).unwrap())
-    }
-
-    fn next_integer_literal(&mut self) -> LexerResult {
-        if let Some(first) = self.input.peek_char() {
+    fn read_integer_literal(text: &str) -> Option<ReadTokenResult> {
+        if let Some(first) = text.chars().next() {
             if first.is_ascii_digit() {
-                self.input.next_char();
-                self.input.advance_while(is_ident_char, None);
+                let end_pos = text
+                    .find(|c: char| !c.is_alphanumeric() & (c != '_'))
+                    .unwrap_or(text.len());
 
-                let span = self.span();
-                match self.parse_integer(span) {
-                    Ok(value) => {
-                        LexerResult::Some(self.get_token(TokenKind::IntegerLiteral(value)))
-                    }
-                    Err(err) => LexerResult::Err(err),
-                }
+                Some(ReadTokenResult {
+                    token: parse_integer(&text[..end_pos]),
+                    consumed_bytes: end_pos,
+                })
             } else {
-                LexerResult::None
+                None
             }
         } else {
-            LexerResult::None
+            None
         }
     }
 
-    fn advance_input_until_char_escaped(&mut self, end_char: char) {
-        let mut prev = None;
-        self.input.advance_while(
-            |c| {
-                if let Some('\\') = prev {
-                    prev = None;
-                    true
-                } else {
-                    prev = Some(c);
-                    c != end_char
-                }
-            },
-            None,
-        );
-    }
+    fn read_char_literal(text: &str) -> Option<ReadTokenResult> {
+        if let Some('\'') = text.chars().next() {
+            let start_pos = '\''.len_utf8();
+            let end_pos = start_pos + Self::count_while_escaped(&text[start_pos..], |c| c != '\'');
 
-    fn unescape_string(
-        &mut self,
-        span: TextSpan,
-        dummy_token: Token,
-    ) -> Result<String, LexerError> {
-        let mut s = String::new();
+            if let Some('\'') = text[end_pos..].chars().next() {
+                let byte_len = end_pos + '\''.len_utf8();
 
-        let text = &span.text()[1..(span.text().len() - 1)];
-        let mut iter = text.char_indices().peekable();
-
-        let mut line = span.line();
-        let mut column = span.column() + 1;
-
-        while let Some((p, c)) = iter.next() {
-            if c == '\\' {
-                let (next_p, next) = iter.next().expect("escape sequence invariant broken");
-
-                match next {
-                    '0' => {
-                        s.push('\0');
-                        column += 2;
-                    }
-                    'n' => {
-                        s.push('\n');
-                        column += 2;
-                    }
-                    'r' => {
-                        s.push('\r');
-                        column += 2;
-                    }
-                    't' => {
-                        s.push('\t');
-                        column += 2;
-                    }
-                    '\\' => {
-                        s.push('\\');
-                        column += 2;
-                    }
-                    '\'' => {
-                        s.push('\'');
-                        column += 2;
-                    }
-                    '\"' => {
-                        s.push('\"');
-                        column += 2;
-                    }
-                    'x' => {
-                        parse_hex_escape(
-                            text,
-                            &mut iter,
-                            &mut s,
-                            line,
-                            column,
-                            p,
-                            &span,
-                            2,
-                            "an ascii",
-                            "two",
-                            dummy_token.clone(),
-                        )?;
-                        column += 4;
-                    }
-                    'u' => {
-                        parse_hex_escape(
-                            text,
-                            &mut iter,
-                            &mut s,
-                            line,
-                            column,
-                            p,
-                            &span,
-                            4,
-                            "a unicode",
-                            "four",
-                            dummy_token.clone(),
-                        )?;
-                        column += 6;
-                    }
-                    _ => {
-                        let end_p = iter.peek().map(|(ep, _)| *ep).unwrap_or(text.len());
-
-                        let token_span = TextSpan::new(&span.file, line, column, p, end_p);
-
-                        let hint_span = TextSpan::new(&span.file, line, column + 1, next_p, end_p);
-
-                        let err = LexerError::new_with_hint(
-                            dummy_token.clone(),
-                            token_span,
-                            "invalid escape sequence",
-                            hint_span,
-                            "valid escape sequences are `\\0`, `\\n`, `\\r`, `\\t`, `\\\\`, `\\'`, `\\\"`, `\\xXX` and `\\uUUUU`",
-                        );
-
-                        return Err(err);
-                    }
-                }
-            } else {
-                s.push(c);
-
-                if c == '\n' {
-                    line += 1;
-                    column = 0;
-                } else {
-                    column += 1;
-                }
-            }
-        }
-
-        Ok(s)
-    }
-
-    fn next_char_literal(&mut self) -> LexerResult {
-        if let Some(first) = self.input.peek_char() {
-            if first == '\'' {
-                self.input.next_char();
-                self.advance_input_until_char_escaped('\'');
-
-                if let Some(_) = self.input.next_char() {
-                    match self.unescape_string(self.span(), self.get_token(TokenKind::dummy_char()))
-                    {
-                        Ok(s) => {
-                            let mut iter = s.chars();
-                            if let Some(c) = iter.next() {
-                                if iter.next().is_some() {
-                                    let err = LexerError::new(
-                                        self.get_token(TokenKind::dummy_char()),
-                                        self.span(),
+                let token = match unescape_string(&text[start_pos..end_pos]) {
+                    Ok(s) => {
+                        let mut chars = s.chars();
+                        if let Some(c) = chars.next() {
+                            if chars.next().is_some() {
+                                TokenKind::Error {
+                                    message: ErrorTokenMessage::new(
                                         "char literal contains more than one codepoint",
-                                    );
-
-                                    LexerResult::Err(err)
-                                } else {
-                                    LexerResult::Some(self.get_token(TokenKind::CharLiteral(c)))
+                                        0,
+                                        byte_len,
+                                    ),
+                                    hint_message: None,
+                                    dummy: Some(TokenKind::dummy_char()),
                                 }
                             } else {
-                                let err = LexerError::new(
-                                    self.get_token(TokenKind::dummy_char()),
-                                    self.span(),
-                                    "empty char literal",
-                                );
-
-                                LexerResult::Err(err)
+                                TokenKind::CharLiteral(c)
+                            }
+                        } else {
+                            TokenKind::Error {
+                                message: ErrorTokenMessage::new("empty char literal", 0, byte_len),
+                                hint_message: None,
+                                dummy: Some(TokenKind::dummy_char()),
                             }
                         }
-                        Err(err) => LexerResult::Err(err),
                     }
-                } else {
-                    let hint_span = self.span();
+                    Err((msg, hint_msg)) => TokenKind::Error {
+                        message: msg,
+                        hint_message: hint_msg,
+                        dummy: Some(TokenKind::dummy_char()),
+                    },
+                };
 
-                    let error_span = TextSpan::new(
-                        &hint_span.file,
-                        self.input.next_line(),
-                        self.input.next_column(),
-                        self.input.file.text.len(),
-                        self.input.file.text.len(),
-                    );
-
-                    let err = LexerError::new_with_hint(
-                        self.get_token(TokenKind::dummy_char()),
-                        error_span,
-                        "open char literal",
-                        hint_span,
-                        "char literals need to be closed with `'`",
-                    );
-
-                    return LexerResult::Err(err);
-                }
+                Some(ReadTokenResult {
+                    token,
+                    consumed_bytes: byte_len,
+                })
             } else {
-                LexerResult::None
+                return Some(ReadTokenResult {
+                    token: TokenKind::Error {
+                        message: ErrorTokenMessage::new("open char literal", end_pos, 0),
+                        hint_message: Some(ErrorTokenMessage::new(
+                            "char literals need to be closed with `'`",
+                            0,
+                            end_pos,
+                        )),
+                        dummy: Some(TokenKind::dummy_char()),
+                    },
+                    consumed_bytes: end_pos,
+                });
             }
         } else {
-            LexerResult::None
+            None
         }
     }
 
-    fn next_string_literal(&mut self) -> LexerResult {
-        if let Some(first) = self.input.peek_char() {
-            if first == '"' {
-                self.input.next_char();
-                self.advance_input_until_char_escaped('"');
+    fn read_string_literal(text: &str) -> Option<ReadTokenResult> {
+        if let Some('"') = text.chars().next() {
+            let start_pos = '"'.len_utf8();
+            let end_pos = start_pos + Self::count_while_escaped(&text[start_pos..], |c| c != '"');
 
-                if let Some(_) = self.input.next_char() {
-                    match self
-                        .unescape_string(self.span(), self.get_token(TokenKind::dummy_string()))
-                    {
-                        Ok(s) => {
-                            LexerResult::Some(self.get_token(TokenKind::StringLiteral(s.into())))
-                        }
-                        Err(err) => LexerResult::Err(err),
-                    }
-                } else {
-                    let hint_span = self.span();
+            if let Some('"') = text[end_pos..].chars().next() {
+                let token = match unescape_string(&text[start_pos..end_pos]) {
+                    Ok(s) => TokenKind::StringLiteral(s.into()),
+                    Err((msg, hint_msg)) => TokenKind::Error {
+                        message: msg,
+                        hint_message: hint_msg,
+                        dummy: Some(TokenKind::dummy_char()),
+                    },
+                };
 
-                    let error_span = TextSpan::new(
-                        &hint_span.file,
-                        self.input.next_line(),
-                        self.input.next_column(),
-                        self.input.file.text.len(),
-                        self.input.file.text.len(),
-                    );
-
-                    let err = LexerError::new_with_hint(
-                        self.get_token(TokenKind::dummy_string()),
-                        error_span,
-                        "open string literal",
-                        hint_span,
-                        "string literals need to be closed with `\"`",
-                    );
-
-                    return LexerResult::Err(err);
-                }
+                Some(ReadTokenResult {
+                    token,
+                    consumed_bytes: end_pos + '"'.len_utf8(),
+                })
             } else {
-                LexerResult::None
+                return Some(ReadTokenResult {
+                    token: TokenKind::Error {
+                        message: ErrorTokenMessage::new("open string literal", end_pos, 0),
+                        hint_message: Some(ErrorTokenMessage::new(
+                            "string literals need to be closed with `\"`",
+                            0,
+                            end_pos,
+                        )),
+                        dummy: Some(TokenKind::dummy_string()),
+                    },
+                    consumed_bytes: end_pos,
+                });
             }
         } else {
-            LexerResult::None
+            None
         }
     }
 
-    fn next_directive(&mut self) -> LexerResult {
-        if let Some(first) = self.input.peek_char() {
-            if first == '#' {
-                self.input.next_char();
+    fn read_directive(text: &str) -> Option<ReadTokenResult> {
+        if let Some('#') = text.chars().next() {
+            let start_pos = '#'.len_utf8();
+            let byte_len = start_pos
+                + Self::count_while(&text[start_pos..], |c| {
+                    c.is_alphanumeric() | (c == '_') | (c == '.')
+                });
+            let ident = &text[start_pos..byte_len];
 
-                let mut s = String::new();
-                self.input.advance_while(is_ident_char, Some(&mut s));
-
-                if s.len() == 0 {
-                    let hint_span = self.span();
-
-                    let byte_end =
-                        if let Some((p, _)) = self.input.remaining().char_indices().nth(1) {
-                            hint_span.byte_end + p
-                        } else {
-                            self.input.file.text.len()
-                        };
-
-                    let error_span = TextSpan::new(
-                        &hint_span.file,
-                        hint_span.line,
-                        hint_span.column + 1,
-                        hint_span.byte_end,
-                        byte_end,
-                    );
-
-                    let err = LexerError::new_with_hint(
-                        self.get_token(TokenKind::Whitespace),
-                        error_span,
-                        "expected directive",
-                        hint_span,
-                        "`#` indicates the start of a directive",
-                    );
-
-                    LexerResult::Err(err)
-                } else {
-                    for (ds, d) in DIRECTIVE_MAP.iter().copied() {
-                        if s.eq_ignore_ascii_case(ds) {
-                            return LexerResult::Some(self.get_token(TokenKind::Directive(d)));
-                        }
-                    }
-
-                    let err = LexerError::new(
-                        self.get_token(TokenKind::Whitespace),
-                        self.span(),
-                        "unknown directive",
-                    );
-
-                    LexerResult::Err(err)
-                }
+            if ident.len() == 0 {
+                Some(ReadTokenResult {
+                    token: TokenKind::Error {
+                        message: ErrorTokenMessage::new("expected directive", start_pos, 0),
+                        hint_message: Some(ErrorTokenMessage::new(
+                            "`#` indicates the start of a directive",
+                            0,
+                            '#'.len_utf8(),
+                        )),
+                        dummy: Some(TokenKind::dummy_identifier()),
+                    },
+                    consumed_bytes: byte_len,
+                })
             } else {
-                LexerResult::None
+                for (d_str, d) in DIRECTIVE_MAP.iter().copied() {
+                    if ident.eq_ignore_ascii_case(d_str) {
+                        return Some(ReadTokenResult {
+                            token: TokenKind::Directive(d),
+                            consumed_bytes: byte_len,
+                        });
+                    }
+                }
+
+                Some(ReadTokenResult {
+                    token: TokenKind::Error {
+                        message: ErrorTokenMessage::new("unknown directive", 0, byte_len),
+                        hint_message: None,
+                        dummy: None,
+                    },
+                    consumed_bytes: byte_len,
+                })
             }
         } else {
-            LexerResult::None
+            None
         }
     }
 
-    fn next_identifier(&mut self) -> LexerResult {
-        if let Some(first) = self.input.peek_char() {
+    fn read_identifier(text: &str) -> Option<ReadTokenResult> {
+        if let Some(first) = text.chars().next() {
             if first.is_alphabetic() | (first == '_') | (first == '.') {
-                self.input.next_char();
+                let byte_len =
+                    Self::count_while(text, |c| c.is_alphanumeric() | (c == '_') | (c == '.'));
+                let ident = &text[..byte_len];
 
-                let mut s = String::new();
-                s.push(first);
-                self.input.advance_while(is_ident_char, Some(&mut s));
-
-                if s.trim_start_matches('_').len() == 0 {
-                    let err = LexerError::new(
-                        self.get_token(TokenKind::Identifier(s.into())),
-                        self.span(),
-                        "identifier only contains underscores",
-                    );
-
-                    LexerResult::Err(err)
-                } else if s.trim_start_matches('.').len() == 0 {
-                    let err = LexerError::new(
-                        self.get_token(TokenKind::Identifier(s.into())),
-                        self.span(),
-                        "identifier only contains dots",
-                    );
-
-                    LexerResult::Err(err)
+                if ident.trim_start_matches(['_', '.']).len() == 0 {
+                    Some(ReadTokenResult {
+                        token: TokenKind::Error {
+                            message: ErrorTokenMessage::new(
+                                "identifier only contains underscores and dots",
+                                0,
+                                byte_len,
+                            ),
+                            hint_message: None,
+                            dummy: Some(TokenKind::dummy_identifier()),
+                        },
+                        consumed_bytes: byte_len,
+                    })
                 } else {
-                    for (kws, kw) in KEYWORD_MAP.iter().copied() {
-                        if s.eq_ignore_ascii_case(kws) {
-                            return LexerResult::Some(self.get_token(TokenKind::Keyword(kw)));
+                    for (kw_str, kw) in KEYWORD_MAP.iter().copied() {
+                        if ident.eq_ignore_ascii_case(kw_str) {
+                            return Some(ReadTokenResult {
+                                token: TokenKind::Keyword(kw),
+                                consumed_bytes: byte_len,
+                            });
                         }
                     }
 
-                    for (rs, r) in REGISTER_MAP.iter().copied() {
-                        if s.eq_ignore_ascii_case(rs) {
-                            return LexerResult::Some(self.get_token(TokenKind::Register(r)));
+                    for (r_str, r) in REGISTER_MAP.iter().copied() {
+                        if ident.eq_ignore_ascii_case(r_str) {
+                            return Some(ReadTokenResult {
+                                token: TokenKind::Register(r),
+                                consumed_bytes: byte_len,
+                            });
                         }
                     }
 
-                    LexerResult::Some(self.get_token(TokenKind::Identifier(s.into())))
+                    Some(ReadTokenResult {
+                        token: TokenKind::Identifier(ident.into()),
+                        consumed_bytes: byte_len,
+                    })
                 }
             } else {
-                LexerResult::None
+                None
             }
         } else {
-            LexerResult::None
-        }
-    }
-
-    pub fn next_token(&mut self) -> LexerResult {
-        if let Some(_) = self.input.peek_char() {
-            let mut result = LexerResult::None;
-
-            if result.is_none() {
-                result = self.next_new_line();
-            }
-
-            if result.is_none() {
-                result = self.next_whitespace();
-            }
-
-            if result.is_none() {
-                result = self.next_line_comment();
-            }
-
-            if result.is_none() {
-                result = self.next_block_comment();
-            }
-
-            if result.is_none() {
-                result = self.next_operator();
-            }
-
-            if result.is_none() {
-                result = self.next_integer_literal();
-            }
-
-            if result.is_none() {
-                result = self.next_char_literal();
-            }
-
-            if result.is_none() {
-                result = self.next_string_literal();
-            }
-
-            if result.is_none() {
-                result = self.next_directive();
-            }
-
-            if result.is_none() {
-                result = self.next_identifier();
-            }
-
-            if result.is_none() {
-                self.input.next_char();
-
-                result = LexerResult::Err(LexerError::new(
-                    self.get_token(TokenKind::Whitespace),
-                    self.span(),
-                    "unexpected character",
-                ));
-            }
-
-            self.current_byte_pos = self.input.next_byte_pos();
-            self.current_line = self.input.next_line();
-            self.current_column = self.input.next_column();
-
-            result
-        } else {
-            LexerResult::None
+            None
         }
     }
 }
-impl Iterator for Lexer {
-    type Item = Result<Token, LexerError>;
 
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_token().into()
+impl langbox::TokenReader for TokenReader {
+    type Token = TokenKind;
+
+    fn read_token(text: &str) -> ReadTokenResult {
+        let mut result: Option<ReadTokenResult> = None;
+
+        macro_rules! try_read {
+            ($f:ident) => {
+                if result.is_none() {
+                    result = Self::$f(text);
+                }
+            };
+        }
+
+        try_read!(read_new_line);
+        try_read!(read_line_comment);
+        try_read!(read_block_comment);
+        try_read!(read_operator);
+        try_read!(read_integer_literal);
+        try_read!(read_char_literal);
+        try_read!(read_string_literal);
+        try_read!(read_directive);
+        try_read!(read_identifier);
+
+        if let Some(result) = result {
+            result
+        } else {
+            let byte_len = text.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+
+            ReadTokenResult {
+                token: TokenKind::Error {
+                    message: ErrorTokenMessage::new("unexpected character", 0, byte_len),
+                    hint_message: None,
+                    dummy: None,
+                },
+                consumed_bytes: byte_len,
+            }
+        }
     }
 }
 
 #[cfg(test)]
 fn test_lexer(input: &'static str, expected: &[TokenKind]) {
+    use langbox::*;
     use termcolor::*;
 
     let stdout = StandardStream::stdout(ColorChoice::Auto);
     let mut stdout = stdout.lock();
 
-    let file = InputFile::new_from_memory("test", input);
-    let mut lexer = Lexer::new(&file);
+    let mut file_server = FileServer::new();
+    let file = file_server.register_file_memory("<test>", input);
+
+    let mut lexer =
+        Lexer::<self::TokenReader, whitespace_mode::RemoveKeepNewLine>::new(file, &file_server);
 
     let mut tokens = Vec::new();
     let mut has_errors = false;
     loop {
-        match lexer.next_token() {
-            OptionalResult::Some(token) => tokens.push(token),
-            OptionalResult::None => break,
-            OptionalResult::Err(err) => {
-                err.pretty_print(&mut stdout).unwrap();
-                has_errors = true;
+        match lexer.next() {
+            Some(Token { kind, .. }) => {
+                if let TokenKind::Error { message, .. } = kind {
+                    message
+                        .pretty_print(&mut stdout, file, &file_server, crate::MessageKind::Error)
+                        .unwrap();
+                    has_errors = true;
+                } else {
+                    tokens.push(kind)
+                }
             }
+            None => break,
         }
     }
 
@@ -1576,7 +1145,7 @@ fn test_lexer(input: &'static str, expected: &[TokenKind]) {
 
     assert_eq!(tokens.len(), expected.len());
     for (t, e) in tokens.iter().zip(expected.iter()) {
-        assert_eq!(&t.kind, e);
+        assert_eq!(t, e);
     }
 }
 
@@ -1591,23 +1160,6 @@ fn parses_new_line() {
 }
 
 #[test]
-fn parses_whitespace() {
-    test_lexer("  \t  \r  ", &[TokenKind::Whitespace]);
-}
-
-#[test]
-fn parses_multiple() {
-    test_lexer(
-        " \n ",
-        &[
-            TokenKind::Whitespace,
-            TokenKind::NewLine,
-            TokenKind::Whitespace,
-        ],
-    );
-}
-
-#[test]
 fn parses_line_comment() {
     test_lexer(
         "// comment",
@@ -1615,6 +1167,7 @@ fn parses_line_comment() {
             has_new_line: false,
         }],
     );
+
     test_lexer(
         "// comment\n",
         &[
@@ -1622,16 +1175,6 @@ fn parses_line_comment() {
                 has_new_line: false,
             },
             TokenKind::NewLine,
-        ],
-    );
-
-    test_lexer(
-        "    // comment",
-        &[
-            TokenKind::Whitespace,
-            TokenKind::Comment {
-                has_new_line: false,
-            },
         ],
     );
 }
