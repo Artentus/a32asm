@@ -6,6 +6,7 @@
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_slice)]
 #![feature(trait_alias)]
+#![feature(let_chains)]
 
 #[macro_use]
 mod int;

@@ -1,3 +1,4 @@
+#[const_trait]
 trait Integer {
     const BIT_COUNT: u32;
     const IS_SIGNED: bool;
