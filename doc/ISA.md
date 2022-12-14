@@ -99,7 +99,7 @@
 | `JMP     s, v     ` | Jump absolute to register                  | `vvvvvvvvvv_vvvvv_sssss_-----_00-0_100` | `-           ` | `pc = s + v` |
 | `JMP     [s, v]   ` | Jump absolute indirect                     | `vvvvvvvvvv_vvvvv_sssss_-----_00-1_100` | `-           ` | `pc = mem[s + v]` |
 | -                   |                                            |                                         |                |           |
-| `LINK    d, v     ` | Add immediate to PC                        | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_01--_100` | `-           ` | `d = pc + v` |
+| `LINK    d, v     ` | Add immediate to PC                        | `vvvvvvvvvv_vvvvv_-----_ddddd_01--_100` | `-           ` | `d = pc + v` |
 | -                   |                                            |                                         |                |           |
 | `LDUI    d, v     ` | Load upper immediate                       | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_10-0_100` | `-           ` | `d = v` |
 | `ADDPCUI d, v     ` | Add upper immediate to PC                  | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_10-1_100` | `-           ` | `d = pc + v` |
