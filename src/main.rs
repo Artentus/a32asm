@@ -932,7 +932,7 @@ fn encode_branch_instruction(
 
     if (d_bin & 0x3) != 0 {
         let msg = Message {
-            kind: MessageKind::Error,
+            kind: MessageKind::Warning,
             token_span: d.span(),
             span: d.span(),
             text: "branch is not aligned, actual target address will be truncated".into(),
@@ -997,7 +997,7 @@ fn encode_instruction(
 ) -> Result<u32, Message> {
     if (current_address & 0x3) != 0 {
         let msg = Message {
-            kind: MessageKind::Error,
+            kind: MessageKind::Warning,
             token_span: line_span.clone(),
             span: line_span.clone(),
             text: "instruction is not 4-byte aligned, behaviour at execution is undefined".into(),
