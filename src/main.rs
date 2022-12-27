@@ -942,7 +942,8 @@ fn encode_branch_instruction(
         warnings.push(msg);
     }
 
-    let rel = d_bin - (current_address as i64);
+    // The offset is relative to the next instruction, not the current one
+    let rel = d_bin - (current_address as i64) - 4;
     if let Some(rel) = i22::new(rel) {
         let rel = (rel.into_inner() as u32) & 0x3F_FFFC;
 
