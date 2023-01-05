@@ -1452,7 +1452,7 @@ fn assembles_ldui_instruction() {
 fn assembles_branch_instruction() {
     test_assembly(
         "jr target\nnop\ntarget:",
-        &[0b_0_000000000010_0000000_00000_1111_101, 0],
+        &[0b_0_000000000001_0000000_00000_1111_101, 0],
     );
 }
 
@@ -1460,7 +1460,7 @@ fn assembles_branch_instruction() {
 fn assembles_branch_negative_instruction() {
     test_assembly(
         "target:\nnop\njr target",
-        &[0, 0b_1_111111111111_1111111_00000_1111_101],
+        &[0, 0b_1_111111111110_1111111_00000_1111_101],
     );
 }
 
