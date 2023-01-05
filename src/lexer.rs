@@ -1177,6 +1177,29 @@ fn parses_line_comment() {
             TokenKind::NewLine,
         ],
     );
+
+    test_lexer(
+        "label: // comment\n",
+        &[
+            TokenKind::Identifier("label".into()),
+            TokenKind::Operator(Operator::Colon),
+            TokenKind::Comment {
+                has_new_line: false,
+            },
+            TokenKind::NewLine,
+        ],
+    );
+
+    test_lexer(
+        "nop // comment\n",
+        &[
+            TokenKind::Keyword(Keyword::Nop),
+            TokenKind::Comment {
+                has_new_line: false,
+            },
+            TokenKind::NewLine,
+        ],
+    );
 }
 
 #[test]
@@ -1189,6 +1212,27 @@ fn parses_block_comment() {
             },
             TokenKind::Comment { has_new_line: true },
             TokenKind::NewLine,
+            TokenKind::Comment {
+                has_new_line: false,
+            },
+        ],
+    );
+
+    test_lexer(
+        "label: /*comment*/",
+        &[
+            TokenKind::Identifier("label".into()),
+            TokenKind::Operator(Operator::Colon),
+            TokenKind::Comment {
+                has_new_line: false,
+            },
+        ],
+    );
+
+    test_lexer(
+        "nop /*comment*/",
+        &[
+            TokenKind::Keyword(Keyword::Nop),
             TokenKind::Comment {
                 has_new_line: false,
             },

@@ -156,6 +156,24 @@ macro_rules! error {
 
 pub trait Parser<T> = langbox::Parser<TokenKind, T, ParseError>;
 
+fn comment() -> impl Parser<()> {
+    parse_fn!(|input| {
+        if let Some(token) = input.peek() {
+            if let TokenKind::Comment { .. } = &token.kind {
+                ParseResult::Match {
+                    remaining: input.advance(),
+                    span: token.span,
+                    value: (),
+                }
+            } else {
+                ParseResult::NoMatch
+            }
+        } else {
+            ParseResult::NoMatch
+        }
+    })
+}
+
 fn operator(op: Operator) -> impl Parser<()> {
     parse_fn!(|input| {
         if let Some(token) = input.peek() {
@@ -1422,7 +1440,7 @@ pub fn parse_line(line: &[Token<TokenKind>]) -> Result<Line, ParseError> {
         parser!({inst()}->[LineKind::Instruction])
     );
 
-    let parser = parser!(line_content <. {eof()}!![
+    let parser = parser!(line_content <. *{comment()} <. {eof()}!![
         error!(all "unexpected line continuation", all "this already forms a complete instruction")
     ]);
 

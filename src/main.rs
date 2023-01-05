@@ -1473,3 +1473,10 @@ fn assembles_move_instruction() {
 fn assembles_ldi_instruction() {
     test_assembly("ldi r16, 1", &[0b_0000000000_00001_00000_10000_1111_111]);
 }
+
+#[test]
+fn assembles_trailing_comment() {
+    test_assembly("nop // comment", &[0]);
+    test_assembly("nop /* comment */", &[0]);
+    test_assembly("nop /* comment */ // comment", &[0]);
+}
