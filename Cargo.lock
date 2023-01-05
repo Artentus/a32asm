@@ -136,9 +136,9 @@ dependencies = [
 
 [[package]]
 name = "langbox"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d48551dc9ff0ba952e9e8b012ca97ad5d86449b424b775702af8a3b377179b1"
+checksum = "23b11c1e26704a80a2069a0ef50f3369a1435570a8544c76527be53eb1971ff2"
 dependencies = [
  "langbox_procmacro",
 ]

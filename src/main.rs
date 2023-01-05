@@ -181,10 +181,10 @@ impl Message {
             .text();
 
         let full_span = self.span.join(&self.token_span);
-        let full_start_line = full_span.start_pos().line();
-        let full_end_line = full_span.end_pos().line();
-        let start_line = self.token_span.start_pos().line();
-        let end_line = self.token_span.end_pos().line();
+        let full_start_line = full_span.start_pos().line_column(file_server).0 as usize;
+        let full_end_line = full_span.end_pos().line_column(file_server).0 as usize;
+        let start_line = self.token_span.start_pos().line_column(file_server).0 as usize;
+        let end_line = self.token_span.end_pos().line_column(file_server).0 as usize;
 
         let file_lines = file_text.lines().collect::<Vec<_>>();
         let full_lines = &file_lines[full_start_line..=full_end_line];
@@ -215,8 +215,8 @@ impl Message {
                 .expect("invalid file")
                 .path()
                 .display(),
-            self.span.start_pos().line() + 1,
-            self.span.start_pos().column() + 1,
+            self.span.start_pos().line_column(file_server).0 + 1,
+            self.span.start_pos().line_column(file_server).1 + 1,
         )?;
 
         writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Cyan)))?;
@@ -235,7 +235,7 @@ impl Message {
 
                 writer.set_color(ColorSpec::new().set_bold(true).set_fg(Some(kind_color)))?;
                 if (i + full_start_line) == start_line {
-                    let column = self.token_span.start_pos().column();
+                    let column = self.token_span.start_pos().line_column(file_server).1 as usize;
                     let char_count = full_line.chars().count();
                     write!(writer, "{0:w$}", "", w = column)?;
                     writeln!(writer, "{0:^<w$}", "", w = (char_count - column).max(1))?;
@@ -243,7 +243,7 @@ impl Message {
                     let char_count = full_line.chars().count();
                     writeln!(writer, "{0:^<w$}", "", w = char_count.max(1))?;
                 } else {
-                    let column = self.token_span.start_pos().column();
+                    let column = self.token_span.start_pos().line_column(file_server).1 as usize;
                     writeln!(writer, "{0:^<w$}", "", w = column.max(1))?;
                 }
             }
@@ -1159,7 +1159,7 @@ fn parse_file<W: WriteColor + Write>(
             }
 
             if !is_ws {
-                match parse_line(line) {
+                match parse_line(line, file_server) {
                     Ok(line) => {
                         if let LineKind::Directive(AssemblerDirective::Include(path)) = line.kind()
                         {

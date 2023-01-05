@@ -1430,7 +1430,7 @@ impl Line {
     }
 }
 
-pub fn parse_line(line: &[Token<TokenKind>]) -> Result<Line, ParseError> {
+pub fn parse_line(line: &[Token<TokenKind>], file_server: &FileServer) -> Result<Line, ParseError> {
     let input = TokenStream::new(line);
 
     let line_content = choice!(
@@ -1447,7 +1447,13 @@ pub fn parse_line(line: &[Token<TokenKind>]) -> Result<Line, ParseError> {
     match parser.run(input) {
         ParseResult::Match { value: kind, .. } => Ok(Line {
             kind,
-            number: line.first().unwrap().span.start_pos().line(),
+            number: line
+                .first()
+                .unwrap()
+                .span
+                .start_pos()
+                .line_column(file_server)
+                .0 as usize,
             span: line.first().unwrap().span.join(&line.last().unwrap().span),
         }),
         ParseResult::NoMatch => {
