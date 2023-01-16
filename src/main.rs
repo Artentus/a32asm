@@ -766,6 +766,9 @@ enum AluOp {
     Lsr    = 0x8,
     Asr    = 0x9,
     Mul    = 0xA,
+    MulHuu = 0xB,
+    MulHss = 0xC,
+    MulHus = 0xD,
 }
 
 fn encode_alu_instruction(
@@ -1089,6 +1092,9 @@ fn encode_instruction(
         Instruction::Lsr { d, l, r } => alu!(Lsr, d, l, r),
         Instruction::Asr { d, l, r } => alu!(Asr, d, l, r),
         Instruction::Mul { d, l, r } => alu!(Mul, d, l, r),
+        Instruction::MulHuu { d, l, r } => alu!(MulHuu, d, l, r),
+        Instruction::MulHss { d, l, r } => alu!(MulHss, d, l, r),
+        Instruction::MulHus { d, l, r } => alu!(MulHus, d, l, r),
         Instruction::Ld { d, s, o } => ld!(Ld, d, s, o),
         Instruction::Ld8 { d, s, o } => ld!(Ld8, d, s, o),
         Instruction::Ld8s { d, s, o } => ld!(Ld8s, d, s, o),

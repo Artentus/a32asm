@@ -864,6 +864,9 @@ pub enum Instruction {
     Lsr    { d: Register, l: Register, r: AluRhs },
     Asr    { d: Register, l: Register, r: AluRhs },
     Mul    { d: Register, l: Register, r: AluRhs },
+    MulHuu { d: Register, l: Register, r: AluRhs },
+    MulHss { d: Register, l: Register, r: AluRhs },
+    MulHus { d: Register, l: Register, r: AluRhs },
 
     Ld    { d: Register, s: Register, o: Expression },
     Ld8   { d: Register, s: Register, o: Expression },
@@ -936,6 +939,9 @@ impl Display for Instruction {
             Self::Lsr { d, l, r } => write!(f, "lsr {}, {}, {}", d, l, r),
             Self::Asr { d, l, r } => write!(f, "asr {}, {}, {}", d, l, r),
             Self::Mul { d, l, r } => write!(f, "mul {}, {}, {}", d, l, r),
+            Self::MulHuu { d, l, r } => write!(f, "mulhuu {}, {}, {}", d, l, r),
+            Self::MulHss { d, l, r } => write!(f, "mulhss {}, {}, {}", d, l, r),
+            Self::MulHus { d, l, r } => write!(f, "mulhus {}, {}, {}", d, l, r),
             Self::Ld { d, s, o } => write!(f, "ld {}, [{}, {}]", d, s, o),
             Self::Ld8 { d, s, o } => write!(f, "ld8 {}, [{}, {}]", d, s, o),
             Self::Ld8s { d, s, o } => write!(f, "ld8s {}, [{}, {}]", d, s, o),
@@ -1039,6 +1045,9 @@ alu_inst!(shl, Shl);
 alu_inst!(lsr, Lsr);
 alu_inst!(asr, Asr);
 alu_inst!(mul, Mul);
+alu_inst!(mulhuu, MulHuu);
+alu_inst!(mulhss, MulHss);
+alu_inst!(mulhus, MulHus);
 
 fn alu_no_store_args() -> impl Parser<(Register, AluRhs)> {
     parser!({inst_req_reg()} <. {inst_req_comma()} <.> {inst_req_alu_rhs()})
@@ -1307,6 +1316,9 @@ fn inst() -> impl Parser<Instruction> {
         lsr(),
         asr(),
         mul(),
+        mulhuu(),
+        mulhss(),
+        mulhus(),
         cmp(),
         bit(),
         test(),

@@ -242,9 +242,7 @@ pub enum Keyword {
     Mul,
     MulHuu,
     MulHss,
-    MulHsu,
-    CSub,
-    Slc,
+    MulHus,
 
     Cmp,
     Bit,
@@ -338,9 +336,7 @@ const KEYWORD_MAP: &[(&str, Keyword)] = &[
     ("mul"    , Keyword::Mul    ),
     ("mulhuu" , Keyword::MulHuu ),
     ("mulhss" , Keyword::MulHss ),
-    ("mulhsu" , Keyword::MulHsu ),
-    ("csub"   , Keyword::CSub   ),
-    ("slc"    , Keyword::Slc    ),
+    ("mulhus" , Keyword::MulHus ),
 
     ("cmp"    , Keyword::Cmp    ),
     ("bit"    , Keyword::Bit    ),

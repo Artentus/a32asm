@@ -60,29 +60,35 @@
 | `SYS`               | System call                                | `----------_-----_-----_-----_1--0_000` | `K`            | `K = 1, pc = 0x00007FF0` |
 | `CLRK`              | Clear K flag                               | `----------_-----_-----_-----_1--1_000` | `K`            | `K = 0` |
 | -                   |                                            |                                         |                |           |
-| `ADD  d, l, r`      | Add                                        | `----------_rrrrr_lllll_ddddd_0000_001` | `C, Z, S, O`   | `d = l + r` |
-| `ADDC d, l, r`      | Add with carry                             | `----------_rrrrr_lllll_ddddd_0001_001` | `C, Z, S, O`   | `d = l + r + C` |
-| `SUB  d, l, r`      | Subtract                                   | `----------_rrrrr_lllll_ddddd_0010_001` | `C, Z, S, O`   | `d = l - r` |
-| `SUBB d, l, r`      | Subtract with Borrow                       | `----------_rrrrr_lllll_ddddd_0011_001` | `C, Z, S, O`   | `d = l - r - 1 + C` |
-| `AND  d, l, r`      | Bitwise AND                                | `----------_rrrrr_lllll_ddddd_0100_001` | `Z`            | `d = l & r` |
-| `OR   d, l, r`      | Bitwise OR                                 | `----------_rrrrr_lllll_ddddd_0101_001` | `Z`            | `d = l \| r` |
-| `XOR  d, l, r`      | Bitwise XOR                                | `----------_rrrrr_lllll_ddddd_0110_001` | `Z`            | `d = l ^ r` |
-| `SHL  d, l, r`      | Shift left                                 | `----------_rrrrr_lllll_ddddd_0111_001` | `Z`            | `d = l << r` |
-| `LSR  d, l, r`      | Logical shift right                        | `----------_rrrrr_lllll_ddddd_1000_001` | `Z`            | `d = l >> r` |
-| `ASR  d, l, r`      | Arithmetic shift right                     | `----------_rrrrr_lllll_ddddd_1001_001` | `Z`            | `d = l >>> r` |
-| `MUL  d, l, r`      | Multiply                                   | `----------_rrrrr_lllll_ddddd_1010_001` | `Z`            | `d = (l * r)[31..0]` |
+| `ADD    d, l, r`    | Add                                        | `----------_rrrrr_lllll_ddddd_0000_001` | `C, Z, S, O`   | `d = l + r` |
+| `ADDC   d, l, r`    | Add with carry                             | `----------_rrrrr_lllll_ddddd_0001_001` | `C, Z, S, O`   | `d = l + r + C` |
+| `SUB    d, l, r`    | Subtract                                   | `----------_rrrrr_lllll_ddddd_0010_001` | `C, Z, S, O`   | `d = l - r` |
+| `SUBB   d, l, r`    | Subtract with Borrow                       | `----------_rrrrr_lllll_ddddd_0011_001` | `C, Z, S, O`   | `d = l - r - 1 + C` |
+| `AND    d, l, r`    | Bitwise AND                                | `----------_rrrrr_lllll_ddddd_0100_001` | `Z`            | `d = l & r` |
+| `OR     d, l, r`    | Bitwise OR                                 | `----------_rrrrr_lllll_ddddd_0101_001` | `Z`            | `d = l \| r` |
+| `XOR    d, l, r`    | Bitwise XOR                                | `----------_rrrrr_lllll_ddddd_0110_001` | `Z`            | `d = l ^ r` |
+| `SHL    d, l, r`    | Shift left                                 | `----------_rrrrr_lllll_ddddd_0111_001` | `Z`            | `d = l << r` |
+| `LSR    d, l, r`    | Logical shift right                        | `----------_rrrrr_lllll_ddddd_1000_001` | `Z`            | `d = l >> r` |
+| `ASR    d, l, r`    | Arithmetic shift right                     | `----------_rrrrr_lllll_ddddd_1001_001` | `Z`            | `d = l >>> r` |
+| `MUL    d, l, r`    | Multiply                                   | `----------_rrrrr_lllll_ddddd_1010_001` | `Z`            | `d = (l * r)[31..0]` |
+| `MULHUU d, l, r`    | Multiply high word (unsigned * unsigned)   | `----------_rrrrr_lllll_ddddd_1011_001` | `Z`            | `d = (l * r)[32..63]` |
+| `MULHSS d, l, r`    | Multiply high word (signed * signed)       | `----------_rrrrr_lllll_ddddd_1100_001` | `Z`            | `d = (l * r)[32..63]` |
+| `MULHUS d, l, r`    | Multiply high word (unsigned * signed)     | `----------_rrrrr_lllll_ddddd_1101_001` | `Z`            | `d = (l * r)[32..63]` |
 | -                   |                                            |                                         |                |           |
-| `ADD  d, l, v`      | Add                                        | `vvvvvvvvvv_vvvvv_lllll_ddddd_0000_010` | `C, Z, S, O`   | `d = l + v` |
-| `ADDC d, l, v`      | Add with carry                             | `vvvvvvvvvv_vvvvv_lllll_ddddd_0001_010` | `C, Z, S, O`   | `d = l + v + C` |
-| `SUB  d, l, v`      | Subtract                                   | `vvvvvvvvvv_vvvvv_lllll_ddddd_0010_010` | `C, Z, S, O`   | `d = l - v` |
-| `SUBB d, l, v`      | Subtract with Borrow                       | `vvvvvvvvvv_vvvvv_lllll_ddddd_0011_010` | `C, Z, S, O`   | `d = l - v - 1 + C` |
-| `AND  d, l, v`      | Bitwise AND                                | `vvvvvvvvvv_vvvvv_lllll_ddddd_0100_010` | `Z`            | `d = l & v` |
-| `OR   d, l, v`      | Bitwise OR                                 | `vvvvvvvvvv_vvvvv_lllll_ddddd_0101_010` | `Z`            | `d = l \| v` |
-| `XOR  d, l, v`      | Bitwise XOR                                | `vvvvvvvvvv_vvvvv_lllll_ddddd_0110_010` | `Z`            | `d = l ^ v` |
-| `SHL  d, l, v`      | Shift left                                 | `vvvvvvvvvv_vvvvv_lllll_ddddd_0111_010` | `Z`            | `d = l << v` |
-| `LSR  d, l, v`      | Logical shift right                        | `vvvvvvvvvv_vvvvv_lllll_ddddd_1000_010` | `Z`            | `d = l >> v` |
-| `ASR  d, l, v`      | Arithmetic shift right                     | `vvvvvvvvvv_vvvvv_lllll_ddddd_1001_010` | `Z`            | `d = l >>> v` |
-| `MUL  d, l, v`      | Multiply                                   | `vvvvvvvvvv_vvvvv_lllll_ddddd_1010_010` | `Z`            | `d = (l * v)[31..0]` |
+| `ADD    d, l, v`    | Add                                        | `vvvvvvvvvv_vvvvv_lllll_ddddd_0000_010` | `C, Z, S, O`   | `d = l + v` |
+| `ADDC   d, l, v`    | Add with carry                             | `vvvvvvvvvv_vvvvv_lllll_ddddd_0001_010` | `C, Z, S, O`   | `d = l + v + C` |
+| `SUB    d, l, v`    | Subtract                                   | `vvvvvvvvvv_vvvvv_lllll_ddddd_0010_010` | `C, Z, S, O`   | `d = l - v` |
+| `SUBB   d, l, v`    | Subtract with Borrow                       | `vvvvvvvvvv_vvvvv_lllll_ddddd_0011_010` | `C, Z, S, O`   | `d = l - v - 1 + C` |
+| `AND    d, l, v`    | Bitwise AND                                | `vvvvvvvvvv_vvvvv_lllll_ddddd_0100_010` | `Z`            | `d = l & v` |
+| `OR     d, l, v`    | Bitwise OR                                 | `vvvvvvvvvv_vvvvv_lllll_ddddd_0101_010` | `Z`            | `d = l \| v` |
+| `XOR    d, l, v`    | Bitwise XOR                                | `vvvvvvvvvv_vvvvv_lllll_ddddd_0110_010` | `Z`            | `d = l ^ v` |
+| `SHL    d, l, v`    | Shift left                                 | `vvvvvvvvvv_vvvvv_lllll_ddddd_0111_010` | `Z`            | `d = l << v` |
+| `LSR    d, l, v`    | Logical shift right                        | `vvvvvvvvvv_vvvvv_lllll_ddddd_1000_010` | `Z`            | `d = l >> v` |
+| `ASR    d, l, v`    | Arithmetic shift right                     | `vvvvvvvvvv_vvvvv_lllll_ddddd_1001_010` | `Z`            | `d = l >>> v` |
+| `MUL    d, l, v`    | Multiply                                   | `vvvvvvvvvv_vvvvv_lllll_ddddd_1010_010` | `Z`            | `d = (l * v)[31..0]` |
+| `MULHUU d, l, r`    | Multiply high word (unsigned * unsigned)   | `vvvvvvvvvv_vvvvv_lllll_ddddd_1011_010` | `Z`            | `d = (l * v)[32..63]` |
+| `MULHSS d, l, r`    | Multiply high word (signed * signed)       | `vvvvvvvvvv_vvvvv_lllll_ddddd_1100_010` | `Z`            | `d = (l * v)[32..63]` |
+| `MULHUS d, l, r`    | Multiply high word (unsigned * signed)     | `vvvvvvvvvv_vvvvv_lllll_ddddd_1101_010` | `Z`            | `d = (l * v)[32..63]` |
 | -                   |                                            |                                         |                |           |
 | `LD    d, [s, v]`   | Load 32bit                                 | `vvvvvvvvvv_vvvvv_sssss_ddddd_0-00_011` | `-`            | `d = mem[s + v]` |
 | `LD8   d, [s, v]`   | Load 8bit                                  | `vvvvvvvvvv_vvvvv_sssss_ddddd_0001_011` | `-`            | `d = (u8)mem[s + v]` |
