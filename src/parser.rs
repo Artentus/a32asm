@@ -877,7 +877,7 @@ pub enum Instruction {
     St16 { d: Register, o: Expression, s: Register },
     Out  { d: Register, o: Expression, s: Register },
 
-    Jmp  { s: Register, o: Expression, indirect: bool },
+    Jmp  { s: Register, o: Expression },
     Link { d: Register, o: Expression },
 
     LdUi    { d: Register, ui: Expression },
@@ -946,13 +946,7 @@ impl Display for Instruction {
             Self::St8 { d, o, s } => write!(f, "st8 [{}, {}], {}", d, o, s),
             Self::St16 { d, o, s } => write!(f, "st16 [{}, {}], {}", d, o, s),
             Self::Out { d, o, s } => write!(f, "out [{}, {}], {}", d, o, s),
-            Self::Jmp { s, o, indirect } => {
-                if *indirect {
-                    write!(f, "jmp [{}, {}]", s, o)
-                } else {
-                    write!(f, "jmp {}, {}", s, o)
-                }
-            }
+            Self::Jmp { s, o } => write!(f, "jmp {}, {}", s, o),
             Self::Link { d, o } => write!(f, "link {}, {}", d, o),
             Self::LdUi { d, ui } => write!(f, "ldui {}, {}", d, ui),
             Self::AddPcUi { d, ui } => write!(f, "addpcui {}, {}", d, ui),
@@ -1205,24 +1199,14 @@ st_inst!(io_out, Out);
 
 fn jmp() -> impl Parser<Instruction> {
     #[inline]
-    fn to_jmp_ind(params: (Register, Expression)) -> Instruction {
-        Instruction::Jmp {
-            s: params.0,
-            o: params.1,
-            indirect: true,
-        }
-    }
-
-    #[inline]
     fn to_jmp(params: (Register, Expression)) -> Instruction {
         Instruction::Jmp {
             s: params.0,
             o: params.1,
-            indirect: false,
         }
     }
 
-    let arg = parser!({mem_arg()}->[to_jmp_ind] <|> ({offset_arg()}!![error!("expected offset")])->[to_jmp]);
+    let arg = parser!(({offset_arg()}!![error!("expected offset")])->[to_jmp]);
     parser!({keyword(Keyword::Jmp)} .> arg)
 }
 

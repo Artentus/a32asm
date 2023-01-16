@@ -845,16 +845,14 @@ fn encode_store_instruction(
 fn encode_jump_instruction(
     s: Register,
     o: &Expression,
-    indirect: bool,
     scope: &[&str],
     constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
     let s_bin = s.0.into_inner() as u32;
     let o_bin = evaluate_folded(o, scope, constant_map, label_map)? as u32;
-    let op_bin = if indirect { 0x1 } else { 0x0 };
 
-    Ok((o_bin << 17) | (s_bin << 12) | (op_bin << 3) | 0b100)
+    Ok((o_bin << 17) | (s_bin << 12) | 0b100)
 }
 
 fn encode_link_instruction(
@@ -1095,9 +1093,7 @@ fn encode_instruction(
         Instruction::St8 { d, o, s } => st!(St8, d, o, s),
         Instruction::St16 { d, o, s } => st!(St16, d, o, s),
         Instruction::Out { d, o, s } => st!(Out, d, o, s),
-        Instruction::Jmp { s, o, indirect } => {
-            encode_jump_instruction(*s, o, *indirect, scope, constant_map, label_map)
-        }
+        Instruction::Jmp { s, o } => encode_jump_instruction(*s, o, scope, constant_map, label_map),
         Instruction::Link { d, o } => {
             encode_link_instruction(*d, o, scope, constant_map, label_map)
         }
