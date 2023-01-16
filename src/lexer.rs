@@ -23,22 +23,38 @@ impl ErrorTokenMessage {
         }
     }
 
-    fn get_line_columns<'a>(&self, text: &'a str) -> (usize, &'a str, usize, usize) {
-        let before = &text[..self.byte_offset];
-        let after = &text[(self.byte_offset + self.byte_len)..];
+    fn get_line_columns<'a>(
+        &self,
+        file_server: &'a langbox::FileServer,
+        span: langbox::TextSpan,
+    ) -> (usize, &'a str, usize, usize) {
+        let span_text = span.text(file_server);
+        let (base_line, mut base_column) = span.start_pos().line_column(file_server);
+
+        let before = &span_text[..self.byte_offset];
+        let after = &span_text[(self.byte_offset + self.byte_len)..];
 
         let line_number = before.chars().filter(|c| *c == '\n').count();
         let line_start = before.rfind('\n').unwrap_or(0);
         let line_end = after.find('\n').unwrap_or(after.len()) + self.byte_offset + self.byte_len;
-        let line = &text[line_start..line_end];
+        let line = &span_text[line_start..line_end];
 
-        let start_column = text[line_start..self.byte_offset].chars().count();
-        let end_column = text[(self.byte_offset + self.byte_len)..line_end]
+        let start_column = span_text[line_start..self.byte_offset].chars().count();
+        let end_column = span_text[(self.byte_offset + self.byte_len)..line_end]
             .chars()
             .count()
             + start_column;
 
-        (line_number, line, start_column, end_column)
+        if line_number > 0 {
+            base_column = 0;
+        }
+
+        (
+            (base_line as usize) + line_number,
+            line,
+            (base_column as usize) + start_column,
+            (base_column as usize) + end_column,
+        )
     }
 
     pub fn pretty_print<W: WriteColor + Write>(
@@ -46,13 +62,14 @@ impl ErrorTokenMessage {
         writer: &mut W,
         file: langbox::FileId,
         file_server: &langbox::FileServer,
+        span: langbox::TextSpan,
         kind: crate::MessageKind,
     ) -> std::io::Result<()> {
         writer.reset()?;
         writeln!(writer)?;
 
-        let file_text = file_server.get_file(file).expect("invalid file").text();
-        let (line_number, line, start_column, end_column) = self.get_line_columns(file_text);
+        let (line_number, line, start_column, end_column) =
+            self.get_line_columns(file_server, span);
         let line_number = line_number + 1;
         let line_number_width = format!("{}", line_number).len();
 
@@ -1125,10 +1142,16 @@ fn test_lexer(input: &'static str, expected: &[TokenKind]) {
     let mut has_errors = false;
     loop {
         match lexer.next() {
-            Some(Token { kind, .. }) => {
+            Some(Token { kind, span }) => {
                 if let TokenKind::Error { message, .. } = kind {
                     message
-                        .pretty_print(&mut stdout, file, &file_server, crate::MessageKind::Error)
+                        .pretty_print(
+                            &mut stdout,
+                            file,
+                            &file_server,
+                            span,
+                            crate::MessageKind::Error,
+                        )
                         .unwrap();
                     has_errors = true;
                 } else {

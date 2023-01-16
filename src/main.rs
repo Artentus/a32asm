@@ -645,10 +645,16 @@ fn tokenize_file<W: WriteColor + Write>(
                 dummy,
             } => {
                 has_error = true;
-                message.pretty_print(writer, file, file_server, MessageKind::Error)?;
+                message.pretty_print(writer, file, file_server, span, MessageKind::Error)?;
 
                 if let Some(hint_message) = hint_message {
-                    hint_message.pretty_print(writer, file, file_server, MessageKind::Hint)?;
+                    hint_message.pretty_print(
+                        writer,
+                        file,
+                        file_server,
+                        span,
+                        MessageKind::Hint,
+                    )?;
                 }
 
                 if let Some(dummy) = dummy {
