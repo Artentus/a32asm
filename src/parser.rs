@@ -880,27 +880,25 @@ pub enum Instruction {
     St16 { d: Register, o: Expression, s: Register },
     Out  { d: Register, o: Expression, s: Register },
 
-    Jmp  { s: Register, o: Expression },
-    Link { d: Register, o: Expression },
-
+    Jl      { d: Register, s: Register, o: Expression },
     LdUi    { d: Register, ui: Expression },
     AddPcUi { d: Register, ui: Expression },
 
-    BrC   { d: Expression },
-    BrZ   { d: Expression },
-    BrS   { d: Expression },
-    BrO   { d: Expression },
-    BrNc  { d: Expression },
-    BrNz  { d: Expression },
-    BrNs  { d: Expression },
-    BrNo  { d: Expression },
-    BrULe { d: Expression },
-    BrUG  { d: Expression },
-    BrSL  { d: Expression },
-    BrSGe { d: Expression },
-    BrSLe { d: Expression },
-    BrSG  { d: Expression },
-    Jr    { d: Expression },
+    BrlC   { d: Register, t: Expression },
+    BrlZ   { d: Register, t: Expression },
+    BrlS   { d: Register, t: Expression },
+    BrlO   { d: Register, t: Expression },
+    BrlNc  { d: Register, t: Expression },
+    BrlNz  { d: Register, t: Expression },
+    BrlNs  { d: Register, t: Expression },
+    BrlNo  { d: Register, t: Expression },
+    BrlULe { d: Register, t: Expression },
+    BrlUG  { d: Register, t: Expression },
+    BrlSL  { d: Register, t: Expression },
+    BrlSGe { d: Register, t: Expression },
+    BrlSLe { d: Register, t: Expression },
+    BrlSG  { d: Register, t: Expression },
+    Jrl    { d: Register, t: Expression },
 
     MvC   { d: Register, l: Register, r: AluRhs },
     MvZ   { d: Register, l: Register, r: AluRhs },
@@ -952,25 +950,24 @@ impl Display for Instruction {
             Self::St8 { d, o, s } => write!(f, "st8 [{}, {}], {}", d, o, s),
             Self::St16 { d, o, s } => write!(f, "st16 [{}, {}], {}", d, o, s),
             Self::Out { d, o, s } => write!(f, "out [{}, {}], {}", d, o, s),
-            Self::Jmp { s, o } => write!(f, "jmp {}, {}", s, o),
-            Self::Link { d, o } => write!(f, "link {}, {}", d, o),
+            Self::Jl { d, s, o } => write!(f, "jl {}, {}, {}", d, s, o),
             Self::LdUi { d, ui } => write!(f, "ldui {}, {}", d, ui),
             Self::AddPcUi { d, ui } => write!(f, "addpcui {}, {}", d, ui),
-            Self::BrC { d } => write!(f, "br.c {}", d),
-            Self::BrZ { d } => write!(f, "br.z {}", d),
-            Self::BrS { d } => write!(f, "br.s {}", d),
-            Self::BrO { d } => write!(f, "br.o {}", d),
-            Self::BrNc { d } => write!(f, "br.nc {}", d),
-            Self::BrNz { d } => write!(f, "br.nz {}", d),
-            Self::BrNs { d } => write!(f, "br.ns {}", d),
-            Self::BrNo { d } => write!(f, "br.no {}", d),
-            Self::BrULe { d } => write!(f, "br.u.le {}", d),
-            Self::BrUG { d } => write!(f, "br.u.g {}", d),
-            Self::BrSL { d } => write!(f, "br.s.l {}", d),
-            Self::BrSGe { d } => write!(f, "br.s.ge {}", d),
-            Self::BrSLe { d } => write!(f, "br.s.le {}", d),
-            Self::BrSG { d } => write!(f, "br.s.g {}", d),
-            Self::Jr { d } => write!(f, "jr {}", d),
+            Self::BrlC { d, t } => write!(f, "brl.c {}, {}", d, t),
+            Self::BrlZ { d, t } => write!(f, "brl.z {}, {}", d, t),
+            Self::BrlS { d, t } => write!(f, "brl.s {}, {}", d, t),
+            Self::BrlO { d, t } => write!(f, "brl.o {}, {}", d, t),
+            Self::BrlNc { d, t } => write!(f, "brl.nc {}, {}", d, t),
+            Self::BrlNz { d, t } => write!(f, "brl.nz {}, {}", d, t),
+            Self::BrlNs { d, t } => write!(f, "brl.ns {}, {}", d, t),
+            Self::BrlNo { d, t } => write!(f, "brl.no {}, {}", d, t),
+            Self::BrlULe { d, t } => write!(f, "brl.u.le {}, {}", d, t),
+            Self::BrlUG { d, t } => write!(f, "brl.u.g {}, {}", d, t),
+            Self::BrlSL { d, t } => write!(f, "brl.s.l {}, {}", d, t),
+            Self::BrlSGe { d, t } => write!(f, "brl.s.ge {}, {}", d, t),
+            Self::BrlSLe { d, t } => write!(f, "brl.s.le {}, {}", d, t),
+            Self::BrlSG { d, t } => write!(f, "brl.s.g {}, {}", d, t),
+            Self::Jrl { d, t } => write!(f, "jrl {}, {}", d, t),
             Self::MvC { d, l, r } => write!(f, "mv.c {}, {}, {}", d, l, r),
             Self::MvZ { d, l, r } => write!(f, "mv.z {}, {}, {}", d, l, r),
             Self::MvS { d, l, r } => write!(f, "mv.s {}, {}, {}", d, l, r),
@@ -1206,27 +1203,41 @@ st_inst!(st8, St8);
 st_inst!(st16, St16);
 st_inst!(io_out, Out);
 
-fn jmp() -> impl Parser<Instruction> {
+fn jl() -> impl Parser<Instruction> {
     #[inline]
-    fn to_jmp(params: (Register, Expression)) -> Instruction {
-        Instruction::Jmp {
+    fn to_jl(params: (Register, (Register, Expression))) -> Instruction {
+        Instruction::Jl {
+            d: params.0,
+            s: params.1 .0,
+            o: params.1 .1,
+        }
+    }
+
+    let arg = parser!(({inst_req_reg()} <. {inst_req_comma()} <.> {offset_arg()}!![error!("expected offset")])->[to_jl]);
+    parser!({keyword(Keyword::Jl)} .> arg)
+}
+
+fn j() -> impl Parser<Instruction> {
+    #[inline]
+    fn to_jl(params: (Register, Expression)) -> Instruction {
+        Instruction::Jl {
+            d: Register(u5!(0)),
             s: params.0,
             o: params.1,
         }
     }
 
-    let arg = parser!(({offset_arg()}!![error!("expected offset")])->[to_jmp]);
-    parser!({keyword(Keyword::Jmp)} .> arg)
-}
-
-fn link() -> impl Parser<Instruction> {
-    parser!(({keyword(Keyword::Link)} .> {inst_req_reg()} <. {inst_req_comma()} <.> {inst_req_expr()})->[|(d, o)| Instruction::Link { d, o }])
+    let arg = parser!(({offset_arg()}!![error!("expected offset")])->[to_jl]);
+    parser!({keyword(Keyword::J)} .> arg)
 }
 
 macro_rules! ui_inst {
     ($name:ident, $inst:ident) => {
         fn $name() -> impl Parser<Instruction> {
-            parser!(({keyword(Keyword::$inst)} .> {inst_req_reg()} <. {inst_req_comma()} <.> {inst_req_expr()})->[|(d, ui)| Instruction::$inst { d, ui }])
+            parser!(
+                ({keyword(Keyword::$inst)} .> {inst_req_reg()} <. {inst_req_comma()} <.> {inst_req_expr()})
+                ->[|(d, ui)| Instruction::$inst { d, ui }]
+            )
         }
     };
 }
@@ -1234,33 +1245,67 @@ macro_rules! ui_inst {
 ui_inst!(ldui, LdUi);
 ui_inst!(addpcui, AddPcUi);
 
-macro_rules! br_inst {
+macro_rules! brl_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
         fn $name() -> impl Parser<Instruction> {
-            parser!(({keyword(Keyword::$kw)} .> {inst_req_expr()})->[|d| Instruction::$inst { d }])
+            parser!(
+                ({keyword(Keyword::$kw)} .> {inst_req_reg()} <. {inst_req_comma()} <.> {inst_req_expr()})
+                ->[|(d, t)| Instruction::$inst { d, t }]
+            )
         }
     };
 }
 
-br_inst!(brc, BrC, BrC);
-br_inst!(brz, BrZ, BrZ);
-br_inst!(brs, BrS, BrS);
-br_inst!(bro, BrO, BrO);
-br_inst!(brnc, BrNc, BrNc);
-br_inst!(brnz, BrNz, BrNz);
-br_inst!(brns, BrNs, BrNs);
-br_inst!(brno, BrNo, BrNo);
-br_inst!(breq, BrEq, BrZ);
-br_inst!(brneq, BrNeq, BrNz);
-br_inst!(brul, BrUL, BrNc);
-br_inst!(bruge, BrUGe, BrC);
-br_inst!(brule, BrULe, BrULe);
-br_inst!(brug, BrUG, BrUG);
-br_inst!(brsl, BrSL, BrSL);
-br_inst!(brsge, BrSGe, BrSGe);
-br_inst!(brsle, BrSLe, BrSLe);
-br_inst!(brsg, BrSG, BrSG);
-br_inst!(jr, Jr, Jr);
+brl_inst!(brlc, BrlC, BrlC);
+brl_inst!(brlz, BrlZ, BrlZ);
+brl_inst!(brls, BrlS, BrlS);
+brl_inst!(brlo, BrlO, BrlO);
+brl_inst!(brlnc, BrlNc, BrlNc);
+brl_inst!(brlnz, BrlNz, BrlNz);
+brl_inst!(brlns, BrlNs, BrlNs);
+brl_inst!(brlno, BrlNo, BrlNo);
+brl_inst!(brleq, BrlEq, BrlZ);
+brl_inst!(brlneq, BrlNeq, BrlNz);
+brl_inst!(brlul, BrlUL, BrlNc);
+brl_inst!(brluge, BrlUGe, BrlC);
+brl_inst!(brlule, BrlULe, BrlULe);
+brl_inst!(brlug, BrlUG, BrlUG);
+brl_inst!(brlsl, BrlSL, BrlSL);
+brl_inst!(brlsge, BrlSGe, BrlSGe);
+brl_inst!(brlsle, BrlSLe, BrlSLe);
+brl_inst!(brlsg, BrlSG, BrlSG);
+brl_inst!(jrl, Jrl, Jrl);
+
+macro_rules! br_inst {
+    ($name:ident, $kw:ident, $inst:ident) => {
+        fn $name() -> impl Parser<Instruction> {
+            parser!(
+                ({keyword(Keyword::$kw)} .> {inst_req_expr()})
+                ->[|t| Instruction::$inst { d: Register(u5!(0)), t }]
+            )
+        }
+    };
+}
+
+br_inst!(brc, BrC, BrlC);
+br_inst!(brz, BrZ, BrlZ);
+br_inst!(brs, BrS, BrlS);
+br_inst!(bro, BrO, BrlO);
+br_inst!(brnc, BrNc, BrlNc);
+br_inst!(brnz, BrNz, BrlNz);
+br_inst!(brns, BrNs, BrlNs);
+br_inst!(brno, BrNo, BrlNo);
+br_inst!(breq, BrEq, BrlZ);
+br_inst!(brneq, BrNeq, BrlNz);
+br_inst!(brul, BrUL, BrlNc);
+br_inst!(bruge, BrUGe, BrlC);
+br_inst!(brule, BrULe, BrlULe);
+br_inst!(brug, BrUG, BrlUG);
+br_inst!(brsl, BrSL, BrlSL);
+br_inst!(brsge, BrSGe, BrlSGe);
+br_inst!(brsle, BrSLe, BrlSLe);
+br_inst!(brsg, BrSG, BrlSG);
+br_inst!(jr, Jr, Jrl);
 
 macro_rules! mv_inst {
     ($name:ident, $kw:ident, $inst:ident) => {
@@ -1339,10 +1384,29 @@ fn inst() -> impl Parser<Instruction> {
         st8(),
         st16(),
         io_out(),
-        jmp(),
-        link(),
+        jl(),
+        j(),
         ldui(),
         addpcui(),
+        brlc(),
+        brlz(),
+        brls(),
+        brlo(),
+        brlnc(),
+        brlnz(),
+        brlns(),
+        brlno(),
+        brleq(),
+        brlneq(),
+        brlul(),
+        brluge(),
+        brlule(),
+        brlug(),
+        brlsl(),
+        brlsge(),
+        brlsle(),
+        brlsg(),
+        jrl(),
         brc(),
         brz(),
         brs(),

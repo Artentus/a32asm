@@ -852,29 +852,18 @@ fn encode_store_instruction(
 }
 
 fn encode_jump_instruction(
+    d: Register,
     s: Register,
     o: &Expression,
     scope: &[&str],
     constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
 ) -> Result<u32, Message> {
+    let d_bin = d.0.into_inner() as u32;
     let s_bin = s.0.into_inner() as u32;
     let o_bin = evaluate_folded(o, scope, constant_map, label_map)? as u32;
 
-    Ok((o_bin << 17) | (s_bin << 12) | 0b100)
-}
-
-fn encode_link_instruction(
-    d: Register,
-    o: &Expression,
-    scope: &[&str],
-    constant_map: &AHashMap<SharedString, i64>,
-    label_map: &AHashMap<String, u32>,
-) -> Result<u32, Message> {
-    let d_bin = d.0.into_inner() as u32;
-    let o_bin = evaluate_folded(o, scope, constant_map, label_map)? as u32;
-
-    Ok((o_bin << 17) | (d_bin << 7) | (0b0100 << 3) | 0b100)
+    Ok((o_bin << 17) | (s_bin << 12) | (d_bin << 7) | 0b100)
 }
 
 #[rustfmt::skip]
@@ -928,7 +917,8 @@ enum ConditionKind {
 
 fn encode_branch_instruction(
     kind: ConditionKind,
-    d: &Expression,
+    d: Register,
+    t: &Expression,
     scope: &[&str],
     constant_map: &AHashMap<SharedString, i64>,
     label_map: &AHashMap<String, u32>,
@@ -936,13 +926,14 @@ fn encode_branch_instruction(
     warnings: &mut Vec<Message>,
 ) -> Result<u32, Message> {
     let kind_bin = (kind as u8) as u32;
-    let d_bin = evaluate_folded(d, scope, constant_map, label_map)?;
+    let d_bin = d.0.into_inner() as u32;
+    let t_bin = evaluate_folded(t, scope, constant_map, label_map)?;
 
-    if (d_bin & 0x3) != 0 {
+    if (t_bin & 0x3) != 0 {
         let msg = Message {
             kind: MessageKind::Warning,
-            token_span: d.span(),
-            span: d.span(),
+            token_span: t.span(),
+            span: t.span(),
             text: "branch is not aligned, actual target address will be truncated".into(),
         };
 
@@ -950,20 +941,21 @@ fn encode_branch_instruction(
     }
 
     // The offset is relative to the next instruction, not the current one
-    let rel = d_bin - (current_address as i64) - 4;
+    let rel = t_bin - (current_address as i64) - 4;
     if let Some(rel) = i22::new(rel) {
         let rel = (rel.into_inner() as u32) & 0x3F_FFFC;
 
         Ok(((rel & 0x20_0000) << 10)
             | ((rel & 0x3FFC) << 17)
             | ((rel & 0x1F_C000) >> 2)
+            | (d_bin << 7)
             | (kind_bin << 3)
             | 0b101)
     } else {
         let msg = Message {
             kind: MessageKind::Error,
-            token_span: d.span(),
-            span: d.span(),
+            token_span: t.span(),
+            span: t.span(),
             text: "branch is out of range".into(),
         };
 
@@ -1047,10 +1039,11 @@ fn encode_instruction(
     }
 
     macro_rules! br {
-        ($cond:ident, $d:expr) => {
+        ($cond:ident, $d:expr, $t:expr) => {
             encode_branch_instruction(
                 ConditionKind::$cond,
-                $d,
+                *$d,
+                $t,
                 scope,
                 constant_map,
                 label_map,
@@ -1105,27 +1098,26 @@ fn encode_instruction(
         Instruction::St8 { d, o, s } => st!(St8, d, o, s),
         Instruction::St16 { d, o, s } => st!(St16, d, o, s),
         Instruction::Out { d, o, s } => st!(Out, d, o, s),
-        Instruction::Jmp { s, o } => encode_jump_instruction(*s, o, scope, constant_map, label_map),
-        Instruction::Link { d, o } => {
-            encode_link_instruction(*d, o, scope, constant_map, label_map)
+        Instruction::Jl { d, s, o } => {
+            encode_jump_instruction(*d, *s, o, scope, constant_map, label_map)
         }
         Instruction::LdUi { d, ui } => ui!(Load, d, ui),
         Instruction::AddPcUi { d, ui } => ui!(AddPc, d, ui),
-        Instruction::BrC { d } => br!(Carry, d),
-        Instruction::BrZ { d } => br!(Zero, d),
-        Instruction::BrS { d } => br!(Sign, d),
-        Instruction::BrO { d } => br!(Overflow, d),
-        Instruction::BrNc { d } => br!(NotCarry, d),
-        Instruction::BrNz { d } => br!(NotZero, d),
-        Instruction::BrNs { d } => br!(NotSign, d),
-        Instruction::BrNo { d } => br!(NotOverflow, d),
-        Instruction::BrULe { d } => br!(UnsignedLessOrEqual, d),
-        Instruction::BrUG { d } => br!(UnsignedGreater, d),
-        Instruction::BrSL { d } => br!(SignedLess, d),
-        Instruction::BrSGe { d } => br!(SignedGreaterOrEqual, d),
-        Instruction::BrSLe { d } => br!(SignedLessOrEqual, d),
-        Instruction::BrSG { d } => br!(SignedGreater, d),
-        Instruction::Jr { d } => br!(Always, d),
+        Instruction::BrlC { d, t } => br!(Carry, d, t),
+        Instruction::BrlZ { d, t } => br!(Zero, d, t),
+        Instruction::BrlS { d, t } => br!(Sign, d, t),
+        Instruction::BrlO { d, t } => br!(Overflow, d, t),
+        Instruction::BrlNc { d, t } => br!(NotCarry, d, t),
+        Instruction::BrlNz { d, t } => br!(NotZero, d, t),
+        Instruction::BrlNs { d, t } => br!(NotSign, d, t),
+        Instruction::BrlNo { d, t } => br!(NotOverflow, d, t),
+        Instruction::BrlULe { d, t } => br!(UnsignedLessOrEqual, d, t),
+        Instruction::BrlUG { d, t } => br!(UnsignedGreater, d, t),
+        Instruction::BrlSL { d, t } => br!(SignedLess, d, t),
+        Instruction::BrlSGe { d, t } => br!(SignedGreaterOrEqual, d, t),
+        Instruction::BrlSLe { d, t } => br!(SignedLessOrEqual, d, t),
+        Instruction::BrlSG { d, t } => br!(SignedGreater, d, t),
+        Instruction::Jrl { d, t } => br!(Always, d, t),
         Instruction::MvC { d, l, r } => mv!(Carry, d, l, r),
         Instruction::MvZ { d, l, r } => mv!(Zero, d, l, r),
         Instruction::MvS { d, l, r } => mv!(Sign, d, l, r),
@@ -1444,11 +1436,6 @@ fn assembles_alu_imm_overflow_negative_instruction() {
 }
 
 #[test]
-fn assembles_link_instruction() {
-    test_assembly("link r12, 8", &[0b_000000000001000_00000_01100_0100_100]);
-}
-
-#[test]
 fn assembles_ldui_instruction() {
     test_assembly(
         "ldui r13, 1_755_879_355",
@@ -1469,6 +1456,14 @@ fn assembles_branch_negative_instruction() {
     test_assembly(
         "target:\nnop\njr target",
         &[0, 0b_1_111111111110_1111111_00000_1111_101],
+    );
+}
+
+#[test]
+fn assembles_branch_link_instruction() {
+    test_assembly(
+        "jrl ra, target\nnop\ntarget:",
+        &[0b_0_000000000001_0000000_00001_1111_101, 0],
     );
 }
 

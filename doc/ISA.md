@@ -102,28 +102,26 @@
 | `ST16 [d, v], s`    | Store 16bit                                | `vvvvvvvvvv_vvvvv_ddddd_sssss_1-10_011` | `-`            | `mem[d + v] = (i16)s` |
 | `OUT  [d, v], s`    | Write to IO                                | `vvvvvvvvvv_vvvvv_ddddd_sssss_1-11_011` | `-`            | `io[d + v] = s` |
 | -                   |                                            |                                         |                |           |
-| `JMP s, v`          | Jump absolute to register                  | `vvvvvvvvvv_vvvvv_sssss_-----_00--_100` | `-`            | `pc = s + v` |
+| `JL d, s, v`        | Jump to register and link                  | `vvvvvvvvvv_vvvvv_sssss_ddddd_0---_100` | `-`            | `d = pc ; pc = s + v` |
 | -                   |                                            |                                         |                |           |
-| `LINK d, v`         | Add immediate to PC                        | `vvvvvvvvvv_vvvvv_-----_ddddd_01--_100` | `-`            | `d = pc + v` |
+| `LDUI    d, v`      | Load upper immediate                       | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1--0_100` | `-`            | `d = v` |
+| `ADDPCUI d, v`      | Add upper immediate to PC                  | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1--1_100` | `-`            | `d = pc + v` |
 | -                   |                                            |                                         |                |           |
-| `LDUI    d, v`      | Load upper immediate                       | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_10-0_100` | `-`            | `d = v` |
-| `ADDPCUI d, v`      | Add upper immediate to PC                  | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_10-1_100` | `-`            | `d = pc + v` |
-| -                   |                                            |                                         |                |           |
-| `BR.C    v`         | Branch relative if carry                   | `vvvvvvvvvv_vvvvv_vvvvv_-----_0001_101` | `-`            | `if C then pc += v` |
-| `BR.Z    v`         | Branch relative if zero                    | `vvvvvvvvvv_vvvvv_vvvvv_-----_0010_101` | `-`            | `if Z then pc += v` |
-| `BR.S    v`         | Branch relative if negative                | `vvvvvvvvvv_vvvvv_vvvvv_-----_0011_101` | `-`            | `if S then pc += v` |
-| `BR.O    v`         | Branch relative if overflow                | `vvvvvvvvvv_vvvvv_vvvvv_-----_0100_101` | `-`            | `if O then pc += v` |
-| `BR.NC   v`         | Branch relative if not carry               | `vvvvvvvvvv_vvvvv_vvvvv_-----_0101_101` | `-`            | `if !C then pc += v` |
-| `BR.NZ   v`         | Branch relative if not zero                | `vvvvvvvvvv_vvvvv_vvvvv_-----_0110_101` | `-`            | `if !Z then pc += v` |
-| `BR.NS   v`         | Branch relative if not negative            | `vvvvvvvvvv_vvvvv_vvvvv_-----_0111_101` | `-`            | `if !S then pc += v` |
-| `BR.NO   v`         | Branch relative if not overflow            | `vvvvvvvvvv_vvvvv_vvvvv_-----_1000_101` | `-`            | `if !O then pc += v` |
-| `BR.U.LE v`         | Branch relative if unsigned less or equal  | `vvvvvvvvvv_vvvvv_vvvvv_-----_1001_101` | `-`            | `if !C \|\| Z then pc += v` |
-| `BR.U.G  v`         | Branch relative if unsigned greater        | `vvvvvvvvvv_vvvvv_vvvvv_-----_1010_101` | `-`            | `if C && !Z then pc += v` |
-| `BR.S.L  v`         | Branch relative if signed less             | `vvvvvvvvvv_vvvvv_vvvvv_-----_1011_101` | `-`            | `if S != O then pc += v` |
-| `BR.S.GE v`         | Branch relative if signed greater or equal | `vvvvvvvvvv_vvvvv_vvvvv_-----_1100_101` | `-`            | `if S == O then pc += v` |
-| `BR.S.LE v`         | Branch relative if signed less or equal    | `vvvvvvvvvv_vvvvv_vvvvv_-----_1101_101` | `-`            | `if Z \|\| (S != O) then pc += v` |
-| `BR.S.G  v`         | Branch relative if signed greater          | `vvvvvvvvvv_vvvvv_vvvvv_-----_1110_101` | `-`            | `if !Z && (S == O) then pc += v` |
-| `JR      v`         | Jump relative                              | `vvvvvvvvvv_vvvvv_vvvvv_-----_1111_101` | `-`            | `pc += v` |
+| `BRL.C    d, v`     | Branch relative if carry                   | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0001_101` | `-`            | `d = pc ; if C then pc += v` |
+| `BRL.Z    d, v`     | Branch relative if zero                    | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0010_101` | `-`            | `d = pc ; if Z then pc += v` |
+| `BRL.S    d, v`     | Branch relative if negative                | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0011_101` | `-`            | `d = pc ; if S then pc += v` |
+| `BRL.O    d, v`     | Branch relative if overflow                | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0100_101` | `-`            | `d = pc ; if O then pc += v` |
+| `BRL.NC   d, v`     | Branch relative if not carry               | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0101_101` | `-`            | `d = pc ; if !C then pc += v` |
+| `BRL.NZ   d, v`     | Branch relative if not zero                | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0110_101` | `-`            | `d = pc ; if !Z then pc += v` |
+| `BRL.NS   d, v`     | Branch relative if not negative            | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_0111_101` | `-`            | `d = pc ; if !S then pc += v` |
+| `BRL.NO   d, v`     | Branch relative if not overflow            | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1000_101` | `-`            | `d = pc ; if !O then pc += v` |
+| `BRL.U.LE d, v`     | Branch relative if unsigned less or equal  | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1001_101` | `-`            | `d = pc ; if !C \|\| Z then pc += v` |
+| `BRL.U.G  d, v`     | Branch relative if unsigned greater        | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1010_101` | `-`            | `d = pc ; if C && !Z then pc += v` |
+| `BRL.S.L  d, v`     | Branch relative if signed less             | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1011_101` | `-`            | `d = pc ; if S != O then pc += v` |
+| `BRL.S.GE d, v`     | Branch relative if signed greater or equal | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1100_101` | `-`            | `d = pc ; if S == O then pc += v` |
+| `BRL.S.LE d, v`     | Branch relative if signed less or equal    | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1101_101` | `-`            | `d = pc ; if Z \|\| (S != O) then pc += v` |
+| `BRL.S.G  d, v`     | Branch relative if signed greater          | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1110_101` | `-`            | `d = pc ; if !Z && (S == O) then pc += v` |
+| `JRL      d, v`     | Jump relative and link                     | `vvvvvvvvvv_vvvvv_vvvvv_ddddd_1111_101` | `-`            | `d = pc ; pc += v` |
 | -                   |                                            |                                         |                |           |
 | `MV.C    d, l, r`   | Move if carry                              | `----------_rrrrr_lllll_ddddd_0001_110` | `-`            | `if C then d = r else d = l` |
 | `MV.Z    d, l, r`   | Move if zero                               | `----------_rrrrr_lllll_ddddd_0010_110` | `-`            | `if Z then d = r else d = l` |
@@ -207,10 +205,10 @@
 | `OUT  [d], s`       | Write to IO                                  | `OUT  [d, 0], s`           | `-`            | `io[d] = s` |
 | `OUT  [v], s`       | Write to IO                                  | `OUT  [zero, v], s`        | `-`            | `io[v] = s` |
 | -                   |                                              |                            |                |           |
-| `BR.EQ   v`         | Branch relative if equal                     | `BR.Z  v`                  | `-`            | `if Z then pc += v` |
-| `BR.NEQ  v`         | Branch relative if not equal                 | `BR.NZ v`                  | `-`            | `if !Z then pc += v` |
-| `BR.U.L  v`         | Branch relative if unsigned less             | `BR.NC v`                  | `-`            | `if !C then pc += v` |
-| `BR.U.GE v`         | Branch relative if unsigned greater or equal | `BR.C  v`                  | `-`            | `if C then pc += v` |
+| `BRL.EQ   d, v`     | Branch relative if equal                     | `BRL.Z  d, v`              | `-`            | `d = pc; if Z then pc += v` |
+| `BRL.NEQ  d, v`     | Branch relative if not equal                 | `BRL.NZ d, v`              | `-`            | `d = pc; if !Z then pc += v` |
+| `BRL.U.L  d, v`     | Branch relative if unsigned less             | `BRL.NC d, v`              | `-`            | `d = pc; if !C then pc += v` |
+| `BRL.U.GE d, v`     | Branch relative if unsigned greater or equal | `BRL.C  d, v`              | `-`            | `d = pc; if C then pc += v` |
 | -                   |                                              |                            |                |           |
 | `MV.EQ   d, l, r`   | Move if equal                                | `MV.Z  d, l, r`            | `-`            | `if Z then d = r else d = l` |
 | `MV.NEQ  d, l, r`   | Move if not equal                            | `MV.NZ d, l, r`            | `-`            | `if !Z then d = r else d = l` |
@@ -221,3 +219,26 @@
 | `MV.NEQ  d, l, v`   | Move if not equal                            | `MV.NZ d, l, v`            | `-`            | `if !Z then d = v else d = l` |
 | `MV.U.L  d, l, v`   | Move if unsigned less                        | `MV.NC d, l, v`            | `-`            | `if !C then d = v else d = l` |
 | `MV.U.GE d, l, v`   | Move if unsigned greater or equal            | `MV.C  d, l, v`            | `-`            | `if C then d = v else d = l` |
+| -                   |                                              |                            |                |           |
+| `J s, v`            | Jump to register                             | `JL zero, s, v`            | `-`            | `pc = s + v` |
+| -                   |                                              |                            |                |           |
+| `BR.C    v`         | Branch relative if carry                     | `BRL.C    zero, v`         | `-`            | `if C then pc += v` |
+| `BR.Z    v`         | Branch relative if zero                      | `BRL.Z    zero, v`         | `-`            | `if Z then pc += v` |
+| `BR.S    v`         | Branch relative if negative                  | `BRL.S    zero, v`         | `-`            | `if S then pc += v` |
+| `BR.O    v`         | Branch relative if overflow                  | `BRL.O    zero, v`         | `-`            | `if O then pc += v` |
+| `BR.NC   v`         | Branch relative if not carry                 | `BRL.NC   zero, v`         | `-`            | `if !C then pc += v` |
+| `BR.NZ   v`         | Branch relative if not zero                  | `BRL.NZ   zero, v`         | `-`            | `if !Z then pc += v` |
+| `BR.NS   v`         | Branch relative if not negative              | `BRL.NS   zero, v`         | `-`            | `if !S then pc += v` |
+| `BR.NO   v`         | Branch relative if not overflow              | `BRL.NO   zero, v`         | `-`            | `if !O then pc += v` |
+| `BR.U.LE v`         | Branch relative if unsigned less or equal    | `BRL.U.LE zero, v`         | `-`            | `if !C \|\| Z then pc += v` |
+| `BR.U.G  v`         | Branch relative if unsigned greater          | `BRL.U.G  zero, v`         | `-`            | `if C && !Z then pc += v` |
+| `BR.S.L  v`         | Branch relative if signed less               | `BRL.S.L  zero, v`         | `-`            | `if S != O then pc += v` |
+| `BR.S.GE v`         | Branch relative if signed greater or equal   | `BRL.S.GE zero, v`         | `-`            | `if S == O then pc += v` |
+| `BR.S.LE v`         | Branch relative if signed less or equal      | `BRL.S.LE zero, v`         | `-`            | `if Z \|\| (S != O) then pc += v` |
+| `BR.S.G  v`         | Branch relative if signed greater            | `BRL.S.G  zero, v`         | `-`            | `if !Z && (S == O) then pc += v` |
+| `JR      v`         | Jump relative                                | `JRL      zero, v`         | `-`            | `pc += v` |
+| -                   |                                              |                            |                |           |
+| `BR.EQ   v`         | Branch relative if equal                     | `BRL.EQ   zero, v`         | `-`            | `if Z then pc += v` |
+| `BR.NEQ  v`         | Branch relative if not equal                 | `BRL.NEQ  zero, v`         | `-`            | `if !Z then pc += v` |
+| `BR.U.L  v`         | Branch relative if unsigned less             | `BRL.U.L  zero, v`         | `-`            | `if !C then pc += v` |
+| `BR.U.GE v`         | Branch relative if unsigned greater or equal | `BRL.U.GE zero, v`         | `-`            | `if C then pc += v` |
